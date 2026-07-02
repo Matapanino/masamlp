@@ -39,8 +39,15 @@ class AbstractLayer(nn.Module):
         b = x.shape[0]
         mask = entmax15(self.mask_weight, dim=-1)  # (k, d_in), rows on the simplex
         masked = mask.unsqueeze(0) * x.unsqueeze(1)  # (b, k, d_in)
-        z = self.fc(masked.reshape(b, -1, 1))  # (b, 2*d_out*k, 1)
-        z = self.bn(z.squeeze(-1))
+        # The grouped 1x1 conv is per-group linear algebra; conv kernels take
+        # a catastrophic slow path for kernel_size=1 / spatial=1 (KI-009:
+        # ~76% of DANet's step time), so compute it as a batched matmul over
+        # the same Conv1d parameters (state_dicts unchanged).
+        w = self.fc.weight.squeeze(-1).reshape(self.k, 2 * self.d_out, -1)  # (k, 2*d_out, d_in)
+        z = torch.einsum("bkd,kod->bko", masked, w)
+        if self.fc.bias is not None:
+            z = z + self.fc.bias.reshape(self.k, 2 * self.d_out)
+        z = self.bn(z.reshape(b, -1))
         gate, value = z.reshape(b, self.k, 2, self.d_out).unbind(dim=2)
         return F.relu(torch.sigmoid(gate) * value).sum(dim=1)  # (b, d_out)
 
