@@ -78,7 +78,15 @@ The tricks from the RealMLP paper are estimator-level options usable with
 - `clip_predictions=True` (regressor) — clip to the observed target range
 - `n_ens=k` — seed ensembling as in pytabkit's RealMLP: k members trained
   with seeds `random_state + i`, predictions averaged on the probability /
-  value scale; works with every model including the retrieval ones
+  value scale; works with every model including the retrieval ones.
+  `ens_mode="vectorized"` trains all members in one vmapped forward/backward
+  (`torch.func`) for BatchNorm-free models — pytabkit's speed trick
+- `weight_decay_schedule="flat_cos"` — RealMLP-TD's scheduled weight decay
+  (param groups can opt out, e.g. biases)
+- `masamlp.realmlp_td_params(task)` — the **full RealMLP-TD recipe**:
+  parametric activations, flat_cos-scheduled dropout and weight decay, PBLD
+  embeddings with their own lr factor, and hybrid categorical encoding
+  (one-hot ≤ 9 categories, embeddings above)
 
 ```python
 from masamlp import MasaClassifier, realmlp_params

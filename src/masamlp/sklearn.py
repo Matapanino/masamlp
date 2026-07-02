@@ -56,6 +56,8 @@ class BaseMasaModel(BaseEstimator):
         cat_encoding: str = "embedding",
         optimizer_betas: tuple[float, float] | None = None,
         n_ens: int = 1,
+        ens_mode: str = "loop",
+        weight_decay_schedule: str = "none",
         device: str = "auto",
         amp: str | bool = "auto",
         compile: bool = False,
@@ -81,6 +83,8 @@ class BaseMasaModel(BaseEstimator):
         self.cat_encoding = cat_encoding
         self.optimizer_betas = optimizer_betas
         self.n_ens = n_ens
+        self.ens_mode = ens_mode
+        self.weight_decay_schedule = weight_decay_schedule
         self.device = device
         self.amp = amp
         self.compile = compile
@@ -194,14 +198,16 @@ class BaseMasaModel(BaseEstimator):
 
         if not isinstance(self.n_ens, int) or self.n_ens < 1:
             raise ValueError(f"n_ens must be a positive int, got {self.n_ens!r}")
+        if self.ens_mode not in ("loop", "vectorized"):
+            raise ValueError(f"ens_mode must be 'loop' or 'vectorized', got {self.ens_mode!r}")
         resolved_params = {**self._model_param_defaults(), **(self.model_params or {})}
         bias = np.asarray(objective.init_bias(y_enc, weight), dtype=np.float32)
 
-        # Ensemble members differ only in their seed (init + shuffling), as
-        # in pytabkit's RealMLP ensembling; predictions are averaged on the
-        # transformed scale (probabilities for classification).
+        # Ensemble members differ by their seed (init + shuffling; in
+        # vectorized mode batches are shared), as in pytabkit's RealMLP
+        # ensembling; predictions are averaged on the transformed scale
+        # (probabilities for classification).
         members: list[torch.nn.Module] = []
-        first_result = None
         for member in range(self.n_ens):
             seed = None if self.random_state is None else self.random_state + member
             seed_everything(seed)
@@ -226,8 +232,10 @@ class BaseMasaModel(BaseEstimator):
                 else:
                     cand_y = objective.prepare_target(y_enc)
                 model.set_candidates(train.x_num, train.x_cat, cand_y)
+            members.append(model)
 
-            config = TrainerConfig(
+        def member_config(seed: int | None) -> TrainerConfig:
+            return TrainerConfig(
                 n_epochs=self.n_epochs,
                 batch_size=self.batch_size,
                 learning_rate=self.learning_rate,
@@ -235,6 +243,7 @@ class BaseMasaModel(BaseEstimator):
                 optimizer=self.optimizer,
                 betas=self.optimizer_betas,
                 lr_scheduler=self.lr_scheduler,
+                weight_decay_schedule=self.weight_decay_schedule,
                 grad_clip=self.grad_clip,
                 device=self.device,
                 amp=self.amp,
@@ -244,17 +253,29 @@ class BaseMasaModel(BaseEstimator):
                 verbose=self.verbose,
                 n_threads=self.n_threads,
             )
-            result = Trainer().fit(
-                model, objective, train, eval_sets, metrics, config, self._inverse_target()
+
+        inverse = self._inverse_target()
+        if self.ens_mode == "vectorized" and self.n_ens > 1:
+            from masamlp.core.ensemble import fit_vectorized
+
+            results = fit_vectorized(
+                members, objective, train, eval_sets, metrics,
+                member_config(self.random_state), inverse,
             )
-            members.append(model)
-            if first_result is None:
-                first_result = result
+            result = results[0]
+        else:
+            result = None
+            for member, model in enumerate(members):
+                seed = None if self.random_state is None else self.random_state + member
+                member_result = Trainer().fit(
+                    model, objective, train, eval_sets, metrics, member_config(seed), inverse
+                )
+                if result is None:
+                    result = member_result
 
         self.preprocessor_ = pre
         self.models_ = members
         self.model_ = members[0]
-        result = first_result
         self.resolved_model_params_ = resolved_params
         self.objective_ = objective
         self.transform_name_ = objective.transform_name

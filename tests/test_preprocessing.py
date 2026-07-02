@@ -96,6 +96,24 @@ def test_onehot_encoding_realmlp_style():
     np.testing.assert_array_equal(x_new[0, 1:], np.zeros(4, dtype=np.float32))
 
 
+def test_hybrid_encoding_splits_by_cardinality():
+    df = pd.DataFrame({
+        "num": np.arange(20.0),
+        "small": ["a", "b", "c", "d"] * 5,             # 4 categories -> one-hot
+        "big": [f"c{i}" for i in range(20)],           # 20 categories -> embedding
+    })
+    pre = TabularPreprocessor(numeric_scaler="none", cat_encoding="hybrid",
+                              onehot_max_categories=9).fit(df)
+    x_num, x_cat = pre.transform(df)
+    assert x_num.shape == (20, 1 + 4)  # numeric + 4-way one-hot
+    assert x_cat.shape == (20, 1) and pre.cat_cardinalities_ == [21]
+    assert pre.transform_width() == (5, 1)
+    restored = TabularPreprocessor.from_state(*pre.get_state())
+    b_num, b_cat = restored.transform(df)
+    np.testing.assert_array_equal(x_num, b_num)
+    np.testing.assert_array_equal(x_cat, b_cat)
+
+
 def test_onehot_state_roundtrip():
     df = pd.DataFrame({"num": [1.0, 2.0, 3.0, 4.0], "cat": ["a", "b", "c", "a"]})
     pre = TabularPreprocessor(numeric_scaler="rssc", cat_encoding="onehot").fit(df)

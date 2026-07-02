@@ -19,7 +19,14 @@ Initial release.
   `embedding_kind = "tokens"`).
 - `n_ens` seed ensembling on both estimators (pytabkit semantics: members
   seeded `random_state + i`, predictions averaged on the transformed scale);
-  save/load stores all members.
+  save/load stores all members. `ens_mode="vectorized"` trains all members
+  in one vmapped forward/backward (torch.func) for BatchNorm-free models,
+  with per-member best-epoch tracking.
+- Full RealMLP-TD recipe via `masamlp.realmlp_td_params(task)`: parametric
+  activations (`act_lr_factor`), flat_cos-scheduled dropout and weight decay
+  (`weight_decay_schedule`, zero decay on biases), PBLD embedding lr factor,
+  and `cat_encoding="hybrid"` (one-hot up to 9 categories, embeddings of
+  size 8 above).
 - RealMLP insights as composable estimator options: `numeric_scaler="rssc"`,
   `cat_encoding="onehot"`, numeric embedding zoo
   (`num_embedding="pbld"/"plr"/"pl"/"periodic"`), learnable input scaling

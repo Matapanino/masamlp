@@ -25,7 +25,9 @@ import pandas as pd
 import torch
 
 _SCALERS = ("quantile", "standard", "robust", "rssc", "none")
-_CAT_ENCODINGS = ("embedding", "onehot")
+# "hybrid" (RealMLP-TD): one-hot for small-cardinality columns
+# (<= onehot_max_categories), index encoding + embeddings for the rest.
+_CAT_ENCODINGS = ("embedding", "onehot", "hybrid")
 # Category values are keyed by str() at fit and transform time: consistent,
 # JSON-serializable, and independent of the input container's dtype.
 _MISSING = "__nan__"
@@ -55,6 +57,7 @@ class TabularPreprocessor:
         categorical_features: str | list[int] | list[str] = "auto",
         max_quantiles: int = 1000,
         cat_encoding: str = "embedding",
+        onehot_max_categories: int = 9,
     ) -> None:
         if numeric_scaler not in _SCALERS:
             raise ValueError(f"numeric_scaler must be one of {_SCALERS}")
@@ -64,6 +67,7 @@ class TabularPreprocessor:
         self.categorical_features = categorical_features
         self.max_quantiles = max_quantiles
         self.cat_encoding = cat_encoding
+        self.onehot_max_categories = onehot_max_categories
 
     # ------------------------------------------------------------------ #
     # Fitting
@@ -82,11 +86,7 @@ class TabularPreprocessor:
             col = df.iloc[:, i]
             keys = sorted({_cat_key(v) for v in col} - {_MISSING})
             self.categories_.append(keys)
-        if self.cat_encoding == "embedding":
-            # +1 reserves index 0 for unknown/missing.
-            self.cat_cardinalities_ = [len(c) + 1 for c in self.categories_]
-        else:
-            self.cat_cardinalities_ = []
+        self._resolve_cat_split()
 
         num = self._matrix(df)
         self.medians_ = np.zeros(num.shape[1], dtype=np.float64)
@@ -154,14 +154,11 @@ class TabularPreprocessor:
             num = self.factors_ * (num - self.center_)
             num = num / np.sqrt(1.0 + (num / 3.0) ** 2)
 
-        if self.cat_encoding == "embedding":
-            x_cat = np.zeros((df.shape[0], len(self.categorical_idx_)), dtype=np.int64)
-            for pos, i in enumerate(self.categorical_idx_):
-                mapping = {key: k + 1 for k, key in enumerate(self.categories_[pos])}
-                col = df.iloc[:, i]
-                x_cat[:, pos] = [mapping.get(_cat_key(v), 0) for v in col]
-        else:
-            x_cat = np.zeros((df.shape[0], 0), dtype=np.int64)
+        x_cat = np.zeros((df.shape[0], len(self.embed_pos_)), dtype=np.int64)
+        for out_col, pos in enumerate(self.embed_pos_):
+            mapping = {key: k + 1 for k, key in enumerate(self.categories_[pos])}
+            col = df.iloc[:, self.categorical_idx_[pos]]
+            x_cat[:, out_col] = [mapping.get(_cat_key(v), 0) for v in col]
         return num.astype(np.float32), x_cat
 
     def fit_transform(self, X: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -169,11 +166,31 @@ class TabularPreprocessor:
 
     def transform_width(self) -> tuple[int, int]:
         """Column counts of ``transform``'s ``(x_num, x_cat)`` outputs."""
-        n_num = len(self.numeric_idx_)
-        if self.cat_encoding == "onehot":
-            n_num += sum(1 if len(c) == 2 else len(c) for c in self.categories_)
-            return n_num, 0
-        return n_num, len(self.categorical_idx_)
+        n_num = len(self.numeric_idx_) + sum(
+            1 if len(self.categories_[pos]) == 2 else len(self.categories_[pos])
+            for pos in self.onehot_pos_
+        )
+        return n_num, len(self.embed_pos_)
+
+    def _resolve_cat_split(self) -> None:
+        """Which categorical columns are one-hot vs embedding-encoded."""
+        n_cats = len(self.categories_)
+        if self.cat_encoding == "embedding":
+            self.onehot_pos_: list[int] = []
+        elif self.cat_encoding == "onehot":
+            self.onehot_pos_ = list(range(n_cats))
+        else:  # hybrid (RealMLP-TD): small cardinalities are one-hot
+            self.onehot_pos_ = [
+                pos
+                for pos in range(n_cats)
+                if len(self.categories_[pos]) <= self.onehot_max_categories
+            ]
+        onehot = set(self.onehot_pos_)
+        self.embed_pos_ = [pos for pos in range(n_cats) if pos not in onehot]
+        # +1 reserves index 0 for unknown/missing.
+        self.cat_cardinalities_ = [
+            len(self.categories_[pos]) + 1 for pos in self.embed_pos_
+        ]
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -213,12 +230,12 @@ class TabularPreprocessor:
         return idx
 
     def _matrix(self, df: pd.DataFrame) -> np.ndarray:
-        """Raw numeric columns, plus one-hot columns in ``"onehot"`` mode —
-        appended before scaling so the scaler sees them, like RealMLP."""
+        """Raw numeric columns, plus the one-hot-encoded categorical columns
+        — appended before scaling so the scaler sees them, like RealMLP."""
         parts: list[np.ndarray] = []
         if self.numeric_idx_:
             parts.append(df.iloc[:, self.numeric_idx_].to_numpy(dtype=np.float64, copy=True))
-        if self.cat_encoding == "onehot" and self.categorical_idx_:
+        if self.onehot_pos_:
             parts.append(self._onehot_block(df))
         if not parts:
             return np.zeros((df.shape[0], 0), dtype=np.float64)
@@ -227,7 +244,8 @@ class TabularPreprocessor:
     def _onehot_block(self, df: pd.DataFrame) -> np.ndarray:
         n = df.shape[0]
         blocks: list[np.ndarray] = []
-        for pos, i in enumerate(self.categorical_idx_):
+        for pos in self.onehot_pos_:
+            i = self.categorical_idx_[pos]
             cats = self.categories_[pos]
             mapping = {key: k for k, key in enumerate(cats)}
             idx = np.array([mapping.get(_cat_key(v), -1) for v in df.iloc[:, i]])
@@ -254,6 +272,7 @@ class TabularPreprocessor:
             "numeric_scaler": self.numeric_scaler,
             "max_quantiles": self.max_quantiles,
             "cat_encoding": self.cat_encoding,
+            "onehot_max_categories": self.onehot_max_categories,
             "feature_names_in": self.feature_names_in_,
             "n_features_in": self.n_features_in_,
             "numeric_idx": self.numeric_idx_,
@@ -280,16 +299,14 @@ class TabularPreprocessor:
             numeric_scaler=meta["numeric_scaler"],
             max_quantiles=meta["max_quantiles"],
             cat_encoding=meta.get("cat_encoding", "embedding"),
+            onehot_max_categories=meta.get("onehot_max_categories", 9),
         )
         pre.feature_names_in_ = list(meta["feature_names_in"])
         pre.n_features_in_ = int(meta["n_features_in"])
         pre.numeric_idx_ = [int(i) for i in meta["numeric_idx"]]
         pre.categorical_idx_ = [int(i) for i in meta["categorical_idx"]]
         pre.categories_ = [list(c) for c in meta["categories"]]
-        if pre.cat_encoding == "embedding":
-            pre.cat_cardinalities_ = [len(c) + 1 for c in pre.categories_]
-        else:
-            pre.cat_cardinalities_ = []
+        pre._resolve_cat_split()
         pre.medians_ = np.asarray(arrays["medians"], dtype=np.float64)
         if pre.numeric_scaler == "quantile":
             pre.quantiles_ = np.asarray(arrays["quantiles"], dtype=np.float64)

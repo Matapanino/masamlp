@@ -36,6 +36,9 @@ class TrainerConfig:
     optimizer: str = "adamw"
     betas: tuple[float, float] | None = None
     lr_scheduler: str = "none"
+    # "flat_cos" scales weight decay per step (RealMLP-TD); param groups may
+    # carry a "wd_factor" (e.g. 0.0 for biases).
+    weight_decay_schedule: str = "none"
     grad_clip: float | None = None
     device: str = "auto"
     amp: str | bool = "auto"
@@ -111,7 +114,7 @@ def predict_transformed(
 
 
 def _build_param_groups(
-    model: nn.Module, extra_modules: list[nn.Module], lr: float
+    model: nn.Module, extra_modules: list[nn.Module], lr: float, weight_decay: float = 0.0
 ) -> list[dict]:
     """Optimizer param groups. Models may expose ``param_groups()`` returning
     ``[{"params": [...], "lr_factor": f}, ...]`` (RealMLP trains its scaling
@@ -126,7 +129,9 @@ def _build_param_groups(
             groups.append({"params": params})
     for group in groups:
         group.setdefault("lr_factor", 1.0)
+        group.setdefault("wd_factor", 1.0)
         group["lr"] = lr * group["lr_factor"]
+        group["weight_decay"] = weight_decay * group["wd_factor"]
     return [g for g in groups if g["params"]]
 
 
@@ -156,6 +161,15 @@ def _coslog4(t: float) -> float:
     """RealMLP's lr factor: ``0.5 - 0.5*cos(2*pi*log2(1 + 15*t))`` for
     ``t`` in [0, 1] — warmup, one full oscillation, and decay to ~0."""
     return float(0.5 - 0.5 * np.cos(2 * np.pi * np.log2(1 + 15 * t)))
+
+
+def flat_cos(t: float) -> float:
+    """pytabkit's ``flat_cos``: constant 1 for the first half of training,
+    cosine decay to 0 over the second half. Used by RealMLP-TD for the
+    weight-decay and dropout schedules."""
+    if t < 0.5:
+        return 1.0
+    return float(0.5 * (1.0 + np.cos(np.pi * (t - 0.5) / 0.5)))
 
 
 def _resolve_batch_size(config: TrainerConfig, n_rows: int) -> int:
@@ -193,7 +207,9 @@ class Trainer:
         eval_sets = [EvalSet(es.name, es.data.to(device), es.y_metric) for es in eval_sets]
 
         run_model = maybe_compile(model, config.compile, device)
-        groups = _build_param_groups(model, extra_modules, config.learning_rate)
+        groups = _build_param_groups(
+            model, extra_modules, config.learning_rate, config.weight_decay
+        )
         params = [p for g in groups for p in g["params"]]
         optimizer = _make_optimizer(
             config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas
@@ -209,6 +225,12 @@ class Trainer:
             per_step_schedule = _coslog4
         elif config.lr_scheduler != "none":
             raise ValueError(f"Unknown lr_scheduler {config.lr_scheduler!r}")
+        if config.weight_decay_schedule not in ("none", "flat_cos"):
+            raise ValueError(
+                f"Unknown weight_decay_schedule {config.weight_decay_schedule!r}"
+            )
+        wd_scheduled = config.weight_decay_schedule == "flat_cos"
+        model_has_schedule = hasattr(model, "set_schedule_t")
 
         amp_enabled, amp_dtype = resolve_amp(config.amp, device)
         # GradScaler only exists for cuda/cpu; fp16 (pre-bf16 GPUs) needs it.
@@ -272,10 +294,18 @@ class Trainer:
             )
             for idx in batches:
                 batch = train if idx is None else train.slice(idx)
+                t = global_step / total_steps
                 if per_step_schedule is not None:
-                    factor = per_step_schedule(global_step / total_steps)
+                    factor = per_step_schedule(t)
                     for group in optimizer.param_groups:
                         group["lr"] = config.learning_rate * group["lr_factor"] * factor
+                if wd_scheduled:
+                    wd_now = config.weight_decay * flat_cos(t)
+                    for group in optimizer.param_groups:
+                        group["weight_decay"] = wd_now * group["wd_factor"]
+                if model_has_schedule:
+                    # RealMLP-TD schedules its dropout probability over training.
+                    model.set_schedule_t(t)
                 if wants_batch_indices:
                     model.current_batch_indices = idx if idx is not None else full_idx
                 global_step += 1

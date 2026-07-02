@@ -4,17 +4,18 @@
 
 - **Weighted eval sets** — accept `(X, y, w)` in `eval_set` and a weighted
   metric contract (repleafgbm-compatible extension of `BaseMetric`).
-- **RealMLP-TD completion** — parametric activations, weight-decay schedule,
-  categorical embeddings for high-cardinality columns under `onehot` mode,
-  `drop_last`-style batching option.
+- **RealMLP-TD remaining bits** — pytabkit's data-driven init modes
+  (`he+5`/`std`) and coupled-Adam weight decay; `drop_last`-style batching
+  option. (Parametric activations, wd/dropout schedules, PBLD factors, and
+  hybrid categorical encoding shipped in `realmlp_td_params`.)
 - **HPO presets** — `model_params` presets per model ("fast" / "accurate";
   DANet paper depths 20/24/32 as named presets).
 - **TabM-style ensembling** — parameter-efficient ensemble flag for
   `resnet`/`realmlp` (Gorishniy et al. 2024); distinct from the existing
   `n_ens` seed ensembling.
-- **Vectorized `n_ens`** — train members jointly via `torch.func`
-  (stacked parameters + vmap, pytabkit's speed trick) for BatchNorm-free
-  models; the current implementation loops.
+- **Vectorized `n_ens` extensions** — shipped for BatchNorm-free models
+  (`ens_mode="vectorized"`); remaining: AMP and grad-clip support inside the
+  vmapped path, GhostBatchNorm-aware variant for DANet.
 - **Per-model estimator aliases** — `ResNetRegressor` etc., thin subclasses.
 
 ## Performance

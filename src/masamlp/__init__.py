@@ -18,7 +18,7 @@ from masamlp.core.objectives import (
     make_objective,
 )
 from masamlp.models import register_model
-from masamlp.presets import realmlp_params
+from masamlp.presets import realmlp_params, realmlp_td_params
 from masamlp.regressor import MasaRegressor
 
 __version__ = "0.1.0"
@@ -39,5 +39,6 @@ __all__ = [
     "MulticlassSoftmax",
     "register_model",
     "realmlp_params",
+    "realmlp_td_params",
     "__version__",
 ]
