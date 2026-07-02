@@ -1,0 +1,125 @@
+# masaMLP
+
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+
+**Extensible tabular deep learning** — TabularResNet, DANet, and TabularLNN
+behind sklearn-compatible estimators with first-class **sample_weight**,
+**custom objectives**, **custom metrics**, and **early stopping on any
+metric**. The sibling library of
+[repleafgbm](https://github.com/Matapanino/repleafgbm) (same author, same API
+philosophy), for the neural side of tabular ML.
+
+> **Status: alpha (0.1.x).** Built with heavy use of
+> [Claude Code](https://claude.com/claude-code) (coding and architecture
+> design).
+
+## Why masaMLP
+
+Excellent tabular DL libraries exist — [pytabkit](https://github.com/dholzmueller/pytabkit)
+ships state-of-the-art models like RealMLP and TabM, and
+[rtdl](https://github.com/yandex-research/rtdl) provides reference modules.
+What they don't make easy is *extension*: `sample_weight` in `fit`, custom
+training losses, custom evaluation metrics, and early stopping driven by
+them. masaMLP is built around exactly those hooks:
+
+- **`fit(X, y, sample_weight=..., eval_set=...)`** — LightGBM-style, sklearn
+  compatible. Weights flow through a single reduction
+  `(loss * w).sum() / w.sum()` that every objective shares.
+- **Custom objectives** are per-sample torch losses — a plain function (or
+  `nn.Module` with trainable parameters). Because the trainer owns the
+  weighted reduction, your loss gets correct `sample_weight` and
+  `class_weight` handling for free.
+- **Custom metrics** are plain NumPy callables via `make_metric`, and any of
+  them (minimize or maximize) can drive early stopping with best-epoch weight
+  restoration.
+- **Multiclass, multioutput regression, class_weight, label smoothing**
+  supported natively; built-in preprocessing (quantile scaling, missing
+  values, categorical embeddings) so DataFrames go straight into `fit`.
+- **CPU / CUDA / MPS** behind `device="auto"`: device-resident tensors with
+  no DataLoader overhead, automatic full-batch mode for small data, bf16 AMP
+  on CUDA, opt-in `torch.compile` with eager fallback.
+
+masaMLP deliberately does *not* try to re-benchmark the field — see
+[docs/attribution.md](docs/attribution.md) for the research and libraries it
+builds on.
+
+## Models
+
+| name | source | notes |
+|---|---|---|
+| `resnet` | Gorishniy et al. 2021 (arXiv:2106.11959) | default; strong baseline, optionally with PLR/periodic numeric embeddings (arXiv:2203.05556) |
+| `danet` | Chen et al. AAAI 2022 (arXiv:2112.02962) | Abstract Layers with learnable sparse feature groups (in-house entmax15) |
+| `lnn` | CfC cells, Hasani et al. 2022 | **experimental** liquid-network adaptation for static tabular data — see [docs/lnn.md](docs/lnn.md) |
+
+Third-party architectures plug in with `register_model` and get the whole
+estimator surface (weights, objectives, metrics, early stopping) for free.
+
+## Install
+
+```bash
+pip install masamlp        # torch, numpy, pandas, scikit-learn
+```
+
+## Quickstart
+
+```python
+import numpy as np
+from masamlp import MasaClassifier, make_metric
+
+def f1(y_true, y_proba):
+    pred = y_proba >= 0.5
+    tp = np.sum(pred & (y_true == 1))
+    return 2 * tp / max(pred.sum() + (y_true == 1).sum(), 1)
+
+clf = MasaClassifier(
+    model="resnet",
+    eval_metric=make_metric(f1, name="f1", minimize=False),
+    early_stopping_rounds=15,
+    class_weight="balanced",
+)
+clf.fit(X_train, y_train, sample_weight=w_train, eval_set=[(X_val, y_val)])
+proba = clf.predict_proba(X_test)
+print(clf.best_iteration_, clf.best_score_, clf.evals_result_["valid_0"]["f1"][:3])
+```
+
+Custom objective (regression, asymmetric loss):
+
+```python
+import torch
+from masamlp import MasaRegressor
+
+def asymmetric_mse(y_true, raw_pred):          # -> per-sample (n,) tensor
+    err = raw_pred - y_true                    # raw_pred: (n, out_dim)
+    return torch.where(err < 0, 4.0 * err**2, err**2).mean(dim=1)
+
+reg = MasaRegressor(model="danet", objective=asymmetric_mse)
+reg.fit(X, y, sample_weight=w)                 # weights just work
+```
+
+Save/load is a plain directory (`manifest.json` + tensors, loaded with
+`weights_only=True` — no pickle execution):
+
+```python
+reg.save_model("model_dir")
+reg2 = MasaRegressor.load_model("model_dir")
+```
+
+## Devices
+
+`device="auto"` resolves cuda > mps > cpu. CUDA gets bf16 AMP by default and
+optional `compile=True`; MPS and CPU train in float32. Details and caveats:
+[docs/devices.md](docs/devices.md).
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+bash scripts/check.sh      # ruff + pytest + examples/quickstart.py
+```
+
+Development rules live in [CLAUDE.md](CLAUDE.md); roadmap in
+[docs/roadmap.md](docs/roadmap.md).
+
+## License
+
+MIT. Architecture attributions: [docs/attribution.md](docs/attribution.md).

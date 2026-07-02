@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "masamlp"
+version = "0.1.0"
+description = "Extensible tabular deep learning: TabularResNet, DANet, and TabularLNN with first-class sample_weight, custom objectives, and custom metrics."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Masaya Kawamata", email = "mkawamata038@gmail.com" }]
+keywords = ["tabular", "deep-learning", "pytorch", "machine-learning", "resnet", "danet"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "scikit-learn>=1.2",
+]
+
+[project.optional-dependencies]
+# Benchmark tooling only; the library (src/) never imports these.
+bench = ["lightgbm>=4.0", "pytabkit>=1.5", "optuna>=3"]
+# API reference generation (scripts/build_docs.sh).
+docs = ["pdoc>=14"]
+dev = ["pytest>=7.0", "pytest-cov>=4", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/Matapanino/masamlp"
+Repository = "https://github.com/Matapanino/masamlp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/masamlp"]
+# Ship the PEP 561 marker so type checkers honour the inline annotations.
+force-include = { "src/masamlp/py.typed" = "masamlp/py.typed" }
+
+[tool.hatch.build.targets.sdist]
+include = ["src/masamlp", "tests", "pyproject.toml", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore:.*torch.compile.*:UserWarning",
+]

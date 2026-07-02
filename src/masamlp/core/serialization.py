@@ -1,0 +1,142 @@
+"""Directory-format save/load.
+
+Layout: ``manifest.json`` (params + fitted metadata), ``preprocessor.json`` /
+``preprocessor.npz`` (scaling and category state), and ``model_state.pt`` (a
+plain tensor state_dict, loaded with ``weights_only=True`` — no pickle
+execution on load). Custom objective/metric objects are intentionally not
+serialized: prediction only needs the stored output transform; refitting a
+loaded estimator requires re-setting them.
+"""
+
+from __future__ import annotations
+
+import json
+import warnings
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+
+from masamlp.data.preprocessing import TabularPreprocessor
+from masamlp.models import build_model
+
+_MANIFEST = "manifest.json"
+_PRE_JSON = "preprocessor.json"
+_PRE_NPZ = "preprocessor.npz"
+_STATE = "model_state.pt"
+
+
+def _json_safe_params(params: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    safe: dict[str, Any] = {}
+    dropped: list[str] = []
+    for key, value in params.items():
+        try:
+            json.dumps(value)
+        except TypeError:
+            dropped.append(key)
+        else:
+            safe[key] = value
+    return safe, dropped
+
+
+def save_model_dir(est: Any, path: str) -> None:
+    from masamlp import __version__
+
+    out = Path(path)
+    out.mkdir(parents=True, exist_ok=True)
+
+    params, dropped = _json_safe_params(est.get_params())
+    if "model_params" in dropped:
+        raise ValueError(
+            "model_params must be JSON-serializable (plain scalars) to save the model"
+        )
+    if dropped:
+        warnings.warn(
+            f"Parameters {dropped} are custom objects and were not serialized; "
+            "the loaded model can predict, but refitting requires re-setting them",
+            stacklevel=2,
+        )
+
+    fitted: dict[str, Any] = {
+        "n_features_in": est.n_features_in_,
+        "feature_names_in": [str(n) for n in est.feature_names_in_],
+        "out_dim": est.out_dim_,
+        "transform_name": est.transform_name_,
+        "n_num": len(est.preprocessor_.numeric_idx_),
+        "cat_cardinalities": est.preprocessor_.cat_cardinalities_,
+        "best_iteration": est.best_iteration_,
+        "best_score": est.best_score_,
+        "evals_result": est.evals_result_,
+    }
+    if hasattr(est, "classes_"):
+        fitted["classes"] = np.asarray(est.classes_).tolist()
+    if getattr(est, "target_mean_", None) is not None:
+        fitted["target_mean"] = est.target_mean_.tolist()
+        fitted["target_std"] = est.target_std_.tolist()
+
+    manifest = {
+        "library": "masamlp",
+        "version": __version__,
+        "estimator": type(est).__name__,
+        "params": params,
+        "dropped_params": dropped,
+        "fitted": fitted,
+    }
+    (out / _MANIFEST).write_text(json.dumps(manifest, indent=2))
+
+    pre_meta, pre_arrays = est.preprocessor_.get_state()
+    (out / _PRE_JSON).write_text(json.dumps(pre_meta, indent=2))
+    np.savez(out / _PRE_NPZ, **pre_arrays)
+
+    torch.save(est.model_.state_dict(), out / _STATE)
+
+
+def load_model_dir(path: str, cls: type) -> Any:
+    src = Path(path)
+    manifest = json.loads((src / _MANIFEST).read_text())
+    if manifest.get("library") != "masamlp":
+        raise ValueError(f"{path} is not a masamlp model directory")
+    if manifest["estimator"] != cls.__name__:
+        raise ValueError(
+            f"Model was saved as {manifest['estimator']}, not {cls.__name__}; "
+            f"load it with {manifest['estimator']}.load_model"
+        )
+
+    est = cls(**manifest["params"])
+    fitted = manifest["fitted"]
+
+    pre_meta = json.loads((src / _PRE_JSON).read_text())
+    with np.load(src / _PRE_NPZ) as npz:
+        pre_arrays = {k: npz[k] for k in npz.files}
+    est.preprocessor_ = TabularPreprocessor.from_state(pre_meta, pre_arrays)
+
+    est.model_ = build_model(
+        est.model,
+        est.model_params,
+        n_num=fitted["n_num"],
+        cat_cardinalities=list(fitted["cat_cardinalities"]),
+        out_dim=fitted["out_dim"],
+        num_embedding=est.num_embedding,
+    )
+    state = torch.load(src / _STATE, weights_only=True, map_location="cpu")
+    est.model_.load_state_dict(state)
+    est.model_.eval()
+
+    est.objective_ = None
+    est.transform_name_ = fitted["transform_name"]
+    est.out_dim_ = fitted["out_dim"]
+    est.n_features_in_ = fitted["n_features_in"]
+    est.feature_names_in_ = np.asarray(fitted["feature_names_in"], dtype=object)
+    est.best_iteration_ = fitted["best_iteration"]
+    est.best_score_ = fitted["best_score"]
+    est.evals_result_ = fitted["evals_result"]
+    if "classes" in fitted:
+        est.classes_ = np.asarray(fitted["classes"])
+    if "target_mean" in fitted:
+        est.target_mean_ = np.asarray(fitted["target_mean"], dtype=np.float64)
+        est.target_std_ = np.asarray(fitted["target_std"], dtype=np.float64)
+    elif hasattr(est, "target_standardize"):
+        est.target_mean_ = None
+        est.target_std_ = None
+    return est
