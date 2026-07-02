@@ -11,16 +11,16 @@
 
 | model | cuda acc | fit s |
 |---|---|---|
-| resnet | 0.997 | 2.7 |
-| realmlp | 0.975 | 0.3 |
-| ft_transformer | 0.980 | 3.2 |
+| resnet | 0.997 | 1.9 |
+| realmlp | 0.975 | 0.2 |
+| ft_transformer | 0.980 | 3.0 |
 | tab_transformer | 0.831 | 0.2 |
-| danet | 0.961 | 171.5 |
-| tabr | 0.995 | 4.4 |
+| danet | 0.959 | 3.4 |
+| tabr | 0.997 | 4.2 |
 | modernnca | 0.983 | 0.5 |
 | gandalf | 0.912 | 0.8 |
-| grn | 0.995 | 0.4 |
-| lnn | 0.995 | 1.1 |
+| grn | 0.995 | 0.3 |
+| lnn | 0.995 | 0.8 |
 
 AMP auto (resnet reg): rmse=0.1845
 save(cuda) -> load -> predict parity: True
@@ -29,18 +29,18 @@ save(cuda) -> load -> predict parity: True
 
 ```
 torch 2.11.0+cu128  cuda=True (Tesla T4)
-resnet                       device=cuda  amp=False fit     5.2s  rmse 0.2107
-resnet                       device=cuda  amp=auto  fit     4.9s  rmse 0.2044
-realmlp (TD-S recipe)        device=cuda  amp=False fit    10.3s  rmse 0.1854
-realmlp (TD-S recipe)        device=cuda  amp=auto  fit    11.9s  rmse 0.1864
-ft_transformer               device=cuda  amp=False fit    20.8s  rmse 0.2937
-ft_transformer               device=cuda  amp=auto  fit    25.1s  rmse 0.2509
-tabr                         device=cuda  amp=False fit    10.7s  rmse 0.1967
+resnet                       device=cuda  amp=False fit     5.8s  rmse 0.2107
+resnet                       device=cuda  amp=auto  fit     4.1s  rmse 0.2044
+realmlp (TD-S recipe)        device=cuda  amp=False fit     9.8s  rmse 0.1854
+realmlp (TD-S recipe)        device=cuda  amp=auto  fit    11.1s  rmse 0.1864
+ft_transformer               device=cuda  amp=False fit    19.3s  rmse 0.2937
+ft_transformer               device=cuda  amp=auto  fit    23.7s  rmse 0.2509
+tabr                         device=cuda  amp=False fit    10.5s  rmse 0.1967
 tabr                         device=cuda  amp=auto  fit    21.3s  rmse 0.1925
 
 -- n_ens=8 (lnn): loop vs vectorized --
-lnn n_ens=8 [loop]           device=cuda  amp=False fit    29.3s  rmse 0.1677
-lnn n_ens=8 [vectorized]     device=cuda  amp=False fit     7.5s  rmse 0.1572
+lnn n_ens=8 [loop]           device=cuda  amp=False fit    28.2s  rmse 0.1677
+lnn n_ens=8 [vectorized]     device=cuda  amp=False fit     7.1s  rmse 0.1572
 
 ```
 

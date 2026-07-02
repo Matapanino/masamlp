@@ -40,4 +40,7 @@ Initial release.
 - Built-in preprocessing: quantile/standard/robust numeric scaling, median
   imputation, categorical index encoding with embeddings.
 - Device support: CPU, CUDA (bf16 AMP, optional `torch.compile`), and MPS,
-  behind `device="auto"`.
+  behind `device="auto"`. Verified on Colab T4 (docs/verdicts/).
+- DANet made GPU-practical (KI-009): the grouped 1x1 conv is computed as a
+  batched einsum over the same parameters and GhostBatchNorm's training
+  path is fused — 50x on T4, 14x on CPU, bit-for-bit state_dict compatible.

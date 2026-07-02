@@ -21,10 +21,11 @@
   the first allocation. `resolve_device` probes with a real allocation
   (`mps_functional()`); `device="auto"` falls back to CPU there, and explicit
   `device="mps"` raises.
-- **KI-009 — DANet is slow on GPU.** T4 verification (2026-07-02): 171s
-  where peers took 0.2–4s. GhostBatchNorm's per-virtual-batch chunk loop
-  plus per-step entmax sorting issue many tiny kernels; needs a fused GBN
-  (reshape + one BatchNorm) before DANet is GPU-practical.
+- **KI-009 — DANet slow on GPU (RESOLVED 2026-07-02).** Root cause was the
+  grouped 1x1 Conv1d slow path (76% of step time), not primarily
+  GhostBatchNorm. Fixed by computing the grouped projection as a batched
+  einsum over the same parameters and fusing GBN's chunk loop: T4 171.5s ->
+  3.4s, CPU 251.8s -> 17.6s on the smoke workload, identical math.
 - **KI-010 — TabR gains nothing from AMP.** autocast around cdist/topk
   roughly doubled fit time on T4 (10.7s -> 21.3s); use ``amp=False`` for
   ``tabr``.
