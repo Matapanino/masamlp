@@ -145,8 +145,8 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
         if self.model == "realmlp":
             # RealMLP-TD-S uses SELU for classification.
             return {"num_scaling": True, "activation": "selu"}
-        if self.model == "tabr":
-            # The label encoder embeds class indices.
+        if self.model in ("tabr", "modernnca"):
+            # Retrieval models aggregate labels and need the class count.
             return {"n_label_classes": len(self.classes_)}
         return super()._model_param_defaults()
 

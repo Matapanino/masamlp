@@ -1,7 +1,8 @@
+import numpy as np
 import pytest
 import torch
 
-from conftest import ALL_MODELS, TINY_PARAMS
+from conftest import ALL_MODELS, TINY_PARAMS, TOKEN_MODELS
 from masamlp.models import FeatureEmbedding, build_model, register_model
 from masamlp.models.layers import entmax15, sparsemax
 
@@ -9,8 +10,8 @@ from masamlp.models.layers import entmax15, sparsemax
 def _forward(name, n_num=4, cards=(3, 5), out_dim=2, num_embedding=None, n=32):
     torch.manual_seed(0)
     params = dict(TINY_PARAMS[name])
-    if name == "tabr" and out_dim > 1:
-        params["n_label_classes"] = out_dim  # multiclass; multi-output reg unsupported
+    if name in ("tabr", "modernnca") and out_dim > 1:
+        params["n_label_classes"] = out_dim  # retrieval models aggregate class labels
     model = build_model(name, params, n_num, list(cards), out_dim, num_embedding)
     x_num = torch.randn(n, n_num)
     if cards:
@@ -26,6 +27,8 @@ def _forward(name, n_num=4, cards=(3, 5), out_dim=2, num_embedding=None, n=32):
 @pytest.mark.parametrize("name", ALL_MODELS)
 @pytest.mark.parametrize("num_embedding", [None, "plr", "periodic"])
 def test_forward_shapes_and_grads(name, num_embedding):
+    if num_embedding == "periodic" and name in TOKEN_MODELS:
+        pytest.skip("periodic embeddings have no fixed token width")
     model, out = _forward(name, num_embedding=num_embedding)
     assert out.shape == (32, 2)
     out.sum().backward()
@@ -90,7 +93,7 @@ def test_lnn_steps_change_output_and_eval_is_deterministic():
     assert torch.allclose(model(x_num, x_cat), model(x_num, x_cat))
 
 
-def test_register_model_and_output_layer_contract():
+def test_register_model_contract():
     class Custom(torch.nn.Module):
         def __init__(self, embedding, out_dim):
             super().__init__()
@@ -107,3 +110,24 @@ def test_register_model_and_output_layer_contract():
         register_model("custom_linear")(Custom)
     with pytest.raises(ValueError, match="Unknown model"):
         build_model("missing", None, 3, [], 1, None)
+
+
+def test_model_without_output_layer_is_allowed():
+    # output_layer is optional (ModernNCA has none); bias init is skipped.
+    class NoHead(torch.nn.Module):
+        def __init__(self, embedding, out_dim):
+            super().__init__()
+            self.embedding = embedding
+            self.linear = torch.nn.Linear(embedding.d_out, out_dim)
+
+        def forward(self, x_num, x_cat):
+            return self.linear(self.embedding(x_num, x_cat))
+
+    register_model("no_head")(NoHead)
+    from masamlp.regressor import MasaRegressor
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 3))
+    m = MasaRegressor(model="no_head", n_epochs=2, device="cpu")
+    m.fit(X, X[:, 0])
+    assert np.isfinite(m.predict(X)).all()

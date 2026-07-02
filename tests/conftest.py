@@ -13,7 +13,13 @@ TINY_PARAMS = {
     "lnn": {"d_hidden": 16, "n_steps": 2, "d_backbone": 32},
     "realmlp": {"hidden_sizes": [32, 32]},
     "tabr": {"d_main": 16, "context_size": 8},
+    "ft_transformer": {"n_blocks": 1, "d_block": 64, "attention_dropout": 0.1, "ffn_dropout": 0.0},
+    "tab_transformer": {"n_layers": 2, "d_token": 16},
+    "modernnca": {"dim": 32, "d_block": 64},
 }
+
+# Attention models tokenize features; "periodic" has no fixed token width.
+TOKEN_MODELS = ("ft_transformer", "tab_transformer")
 
 # Estimator-level settings some models need to learn quickly in tests
 # (RealMLP's NTP layers are built for its high-lr recipe).
@@ -24,6 +30,9 @@ TRAIN_KWARGS = {
         "optimizer_betas": (0.9, 0.95),
         "lr_scheduler": "coslog4",
     },
+    # On numeric-only data TabTransformer's head width scales with the tiny
+    # raw input; PLR numeric embeddings (the intended extension) fix that.
+    "tab_transformer": {"learning_rate": 3e-3, "num_embedding": "plr"},
 }
 
 ALL_MODELS = sorted(TINY_PARAMS)

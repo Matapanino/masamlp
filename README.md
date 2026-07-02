@@ -49,8 +49,11 @@ builds on.
 |---|---|---|
 | `resnet` | Gorishniy et al. 2021 (arXiv:2106.11959) | default; strong baseline |
 | `realmlp` | Holzmüller et al. 2024 (arXiv:2407.04491) | RealMLP-TD-S architecture (scaling layer, NTP linear layers, SELU/Mish); pair with `masamlp.realmlp_params(task)` for the full training recipe |
+| `ft_transformer` | Gorishniy et al. 2021 (arXiv:2106.11959) | feature tokens + [CLS] + PreNorm/ReGLU transformer, per the rtdl reference |
+| `tab_transformer` | Huang et al. 2020 (arXiv:2012.06678) | transformer over categorical tokens; numerics bypass (or embed via `num_embedding`) |
 | `danet` | Chen et al. AAAI 2022 (arXiv:2112.02962) | Abstract Layers with learnable sparse feature groups (in-house entmax15) |
 | `tabr` | Gorishniy et al. 2023 (arXiv:2307.14338) | retrieval-augmented: nearest training rows are aggregated into each prediction |
+| `modernnca` | Ye et al. 2024 (arXiv:2407.03257) | soft-nearest-neighbor aggregation with stochastic candidate sampling; pairs well with `num_embedding="plr-lite"` |
 | `lnn` | CfC cells, Hasani et al. 2022 | **experimental** liquid-network adaptation for static tabular data — see [docs/lnn.md](docs/lnn.md) |
 
 Third-party architectures plug in with `register_model` and get the whole
@@ -63,8 +66,10 @@ The tricks from the RealMLP paper are estimator-level options usable with
 
 - `numeric_scaler="rssc"` — robust scale + smooth clip preprocessing
 - `cat_encoding="onehot"` — RealMLP-style one-hot (binary → ±1, missing → 0)
-- `num_embedding="pbld" | "plr" | "pl" | "periodic"` — the numeric embedding
-  zoo (arXiv:2203.05556 + PBLD)
+- `num_embedding="pbld" | "plr" | "plr-lite" | "pl" | "periodic"` — the
+  numeric embedding zoo (arXiv:2203.05556 + PBLD); token models
+  (`ft_transformer`, `tab_transformer`) use the same options as feature
+  tokenizers
 - `model_params={"num_scaling": True}` — learnable per-feature input scale
 - `lr_scheduler="coslog4"`, `optimizer_betas=(0.9, 0.95)` — the training
   schedule

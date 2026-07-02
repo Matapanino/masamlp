@@ -6,10 +6,21 @@ stopping on any metric), not the model designs.
 
 ## Architectures
 
-- **TabularResNet** — Gorishniy, Rubachev, Khrulkov, Babenko, *Revisiting
-  Deep Learning Models for Tabular Data*, NeurIPS 2021
+- **TabularResNet / FT-Transformer** — Gorishniy, Rubachev, Khrulkov,
+  Babenko, *Revisiting Deep Learning Models for Tabular Data*, NeurIPS 2021
   (arXiv:2106.11959). Reference implementation: `rtdl_revisiting_models`
-  (MIT).
+  (MIT); the FT-Transformer keeps its PreNorm details (first block skips the
+  attention normalization; last block attends for [CLS] only) with
+  torch-native attention.
+- **TabTransformer** — Huang, Khetan, Cvitkovic, Karnin, *TabTransformer:
+  Tabular Data Modeling Using Contextual Embeddings*, 2020
+  (arXiv:2012.06678). Implemented from the paper (post-norm encoder over
+  categorical tokens, LayerNorm bypass for numerics, (4l, 2l) MLP head).
+- **ModernNCA** — Ye, Liu, Zhan, *Modern Neighborhood Component Analysis: A
+  Deep Tabular Baseline Two Decades Later*, ICLR 2025 (arXiv:2407.03257).
+  Clean-room reimplementation following the MIT-licensed official code in
+  LAMDA-Tabular/TALENT (soft-nearest-neighbor aggregation, stochastic
+  candidate sampling, diagonal self-exclusion).
 - **Numeric embeddings (PLR / periodic)** — Gorishniy, Rubachev, Babenko,
   *On Embeddings for Numerical Features in Tabular Deep Learning*, NeurIPS
   2022 (arXiv:2203.05556). Reference: `rtdl_num_embeddings` (MIT).

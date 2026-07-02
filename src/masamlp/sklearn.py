@@ -196,7 +196,7 @@ class BaseMasaModel(BaseEstimator):
             num_embedding=self.num_embedding,
         )
         bias = np.asarray(objective.init_bias(y_enc, weight), dtype=np.float32)
-        if bias.shape == (out_dim,):
+        if hasattr(model, "output_layer") and bias.shape == (out_dim,):
             with torch.no_grad():
                 model.output_layer.bias.copy_(torch.from_numpy(bias))
         if hasattr(model, "set_candidates"):
