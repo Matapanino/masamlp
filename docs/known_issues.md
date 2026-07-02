@@ -21,6 +21,13 @@
   the first allocation. `resolve_device` probes with a real allocation
   (`mps_functional()`); `device="auto"` falls back to CPU there, and explicit
   `device="mps"` raises.
+- **KI-009 — DANet is slow on GPU.** T4 verification (2026-07-02): 171s
+  where peers took 0.2–4s. GhostBatchNorm's per-virtual-batch chunk loop
+  plus per-step entmax sorting issue many tiny kernels; needs a fused GBN
+  (reshape + one BatchNorm) before DANet is GPU-practical.
+- **KI-010 — TabR gains nothing from AMP.** autocast around cdist/topk
+  roughly doubled fit time on T4 (10.7s -> 21.3s); use ``amp=False`` for
+  ``tabr``.
 - **KI-008 — TabR re-encodes all candidates every training step.** The
   retrieval search runs over the whole training set per batch (the original
   design); fine for the small/medium datasets this library targets, O(N)
