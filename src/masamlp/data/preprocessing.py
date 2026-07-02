@@ -23,7 +23,9 @@ _MISSING = "__nan__"
 
 
 def _cat_key(value: Any) -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
+    # pd.isna covers None, float NaN, pd.NA, and pd.NaT (cell values are
+    # scalars here); plain strings pass through.
+    if value is None or (not isinstance(value, str | bytes) and pd.isna(value)):
         return _MISSING
     return str(value)
 
@@ -148,9 +150,14 @@ class TabularPreprocessor:
     def _resolve_categorical(self, df: pd.DataFrame) -> set[int]:
         spec = self.categorical_features
         if spec == "auto":
-            kinds = ("object", "category", "bool", "string")
+            # dtype-API detection, not string matching: pandas 3 renamed the
+            # default string dtype to ``str``. Anything non-numeric (object,
+            # str/string, category, datetime) plus bool is categorical.
+            types = pd.api.types
             return {
-                i for i, dtype in enumerate(df.dtypes) if str(dtype).lower().startswith(kinds)
+                i
+                for i, dtype in enumerate(df.dtypes)
+                if types.is_bool_dtype(dtype) or not types.is_numeric_dtype(dtype)
             }
         if spec is None:
             return set()

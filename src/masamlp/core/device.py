@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import functools
 import warnings
 
 import torch
 
 _KNOWN = ("auto", "cpu", "cuda", "mps")
+
+
+@functools.lru_cache(maxsize=1)
+def mps_functional() -> bool:
+    """True when MPS is available *and* actually works. Virtualized macOS
+    hosts (e.g. GitHub Actions runners) report MPS as available but fail on
+    the first allocation, so probe with one."""
+    if not torch.backends.mps.is_available():
+        return False
+    try:
+        torch.zeros(1, device="mps")
+        return True
+    except RuntimeError:
+        return False
 
 
 def resolve_device(device: str | torch.device) -> torch.device:
@@ -18,13 +33,13 @@ def resolve_device(device: str | torch.device) -> torch.device:
     if device == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda")
-        if torch.backends.mps.is_available():
+        if mps_functional():
             return torch.device("mps")
         return torch.device("cpu")
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("device='cuda' requested but CUDA is not available")
-    if device == "mps" and not torch.backends.mps.is_available():
-        raise RuntimeError("device='mps' requested but MPS is not available")
+    if device == "mps" and not mps_functional():
+        raise RuntimeError("device='mps' requested but MPS is not available or not functional")
     return torch.device(device)
 
 

@@ -26,8 +26,11 @@ by `core/trainer.py` + `core/device.py`; models never contain device logic.
 ## MPS (Apple Silicon)
 
 - Supported for training and inference in float32. AMP and compile are
-  gated off (warn + fallback). Treated as a development/smoke platform; CI
-  runs the MPS smoke test on macOS arm64 runners.
+  gated off (warn + fallback). Treated as a development/smoke platform.
+- Availability is probed with a real allocation (`mps_functional()`), not
+  just `is_available()`: virtualized macOS hosts (GitHub Actions runners)
+  advertise MPS but cannot allocate, so `device="auto"` falls back to CPU
+  there and the CI smoke test skips itself.
 
 ## CPU
 

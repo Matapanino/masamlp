@@ -16,6 +16,11 @@
 - **KI-005 — categorical values are keyed by `str(value)`.** `1` and `"1"`
   in the same column collide into one category. Consistent across fit and
   transform, but a semantic surprise for mixed-type columns.
+- **KI-007 — virtualized macOS reports MPS but cannot allocate.** GitHub
+  Actions macos-14 runners return `mps.is_available() == True` yet fail on
+  the first allocation. `resolve_device` probes with a real allocation
+  (`mps_functional()`); `device="auto"` falls back to CPU there, and explicit
+  `device="mps"` raises.
 - **KI-006 — custom objective/metric objects are not serialized.**
   `save_model` warns and stores everything needed for prediction; refitting
   a loaded estimator requires re-setting the custom objects.

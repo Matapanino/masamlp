@@ -2,13 +2,15 @@ import numpy as np
 import pytest
 import torch
 
-from masamlp.core.device import resolve_amp, resolve_device
+from masamlp.core.device import mps_functional, resolve_amp, resolve_device
 from masamlp.regressor import MasaRegressor
 
 _KW = dict(n_epochs=10, random_state=0, model_params={"d": 32, "n_blocks": 1})
 
 cuda_available = torch.cuda.is_available()
-mps_available = torch.backends.mps.is_available()
+# Functional probe, not is_available(): virtualized macOS CI runners report
+# MPS as available but fail on the first allocation.
+mps_available = mps_functional()
 
 
 def test_resolve_device_auto_and_validation():
