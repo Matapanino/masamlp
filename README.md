@@ -1,5 +1,7 @@
 # masaMLP
 
+![CI](https://github.com/Matapanino/masamlp/actions/workflows/ci.yml/badge.svg)
+![PyPI](https://img.shields.io/pypi/v/masamlp.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 **Extensible tabular deep learning** — TabularResNet, DANet, and TabularLNN

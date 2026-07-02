@@ -1,0 +1,89 @@
+name: Publish
+
+# Build sdist+wheel on every version tag and publish to PyPI via OIDC
+# "trusted publishing" (no API token stored in the repo). A manual run
+# (workflow_dispatch) publishes to TestPyPI instead, for a dry run.
+#
+# Prerequisites (one-time, PyPI side):
+#   pypi.org/manage/account/publishing -> add a pending publisher
+#     PyPI Project Name: masamlp
+#     Owner:             Matapanino
+#     Repository name:   masamlp
+#     Workflow name:     publish.yml
+#     Environment:       (leave blank, or "pypi")
+#   For the TestPyPI dry run, repeat at test.pypi.org.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # manual TestPyPI dry run
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches package version
+        # Only on a real version tag; the workflow_dispatch dry run has no tag.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, sys
+          tag = os.environ["TAG"].lstrip("v")
+          pp = re.search(r'(?m)^version = "([^"]+)"',
+                         pathlib.Path("pyproject.toml").read_text()).group(1)
+          init = re.search(r'(?m)^__version__ = "([^"]+)"',
+                           pathlib.Path("src/masamlp/__init__.py").read_text()).group(1)
+          if not (tag == pp == init):
+              sys.exit(f"Version mismatch: tag={tag!r} pyproject={pp!r} __init__={init!r}")
+          print(f"OK: version {tag} matches the tag, pyproject.toml, and __init__.py.")
+          PY
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    # Dry run: manual dispatch publishes to TestPyPI.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  pypi:
+    # Real release: a version tag (vX.Y.Z) publishes to PyPI.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/masamlp/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Idempotent re-runs (e.g. re-tag) skip already-published files.
+          skip-existing: true
