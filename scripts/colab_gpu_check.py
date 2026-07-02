@@ -41,8 +41,13 @@ def setup() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     sh(["tar", "xzf", "/content/masamlp.tar.gz", "-C", str(WORK)])
     sh([sys.executable, "-m", "pip", "install", "-q", "pytest"])
-    # --no-deps: Colab ships a CUDA torch + numpy/pandas/sklearn already.
-    sh([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "-e", str(WORK)])
+    # The already-running kernel won't see a fresh editable install (.pth files
+    # are processed at interpreter start), so import straight from src/;
+    # subprocesses (pytest, gpu_speed) get PYTHONPATH instead.
+    sys.path.insert(0, str(WORK / "src"))
+    import os
+
+    os.environ["PYTHONPATH"] = str(WORK / "src")
 
 
 def run_pytest() -> int:
@@ -103,13 +108,23 @@ def speed_benchmark() -> None:
 
 
 def main() -> int:
+    import traceback
+
     import torch
 
     log(f"# masaMLP GPU verification — torch {torch.__version__}, "
         f"cuda={torch.cuda.is_available()}\n")
-    rc = run_pytest()
-    cuda_smoke()
-    speed_benchmark()
+    rc = 1
+    try:
+        rc = run_pytest()
+    except Exception:
+        log("pytest phase crashed:\n```\n" + traceback.format_exc() + "\n```")
+    for name, phase in (("cuda_smoke", cuda_smoke), ("speed", speed_benchmark)):
+        try:
+            phase()
+        except Exception:
+            log(f"{name} phase crashed:\n```\n" + traceback.format_exc() + "\n```")
+            rc = rc or 1
     log(f"pytest exit code: {rc}")
     REPORT.write_text("\n".join(_lines))
     print(f"report written to {REPORT}", flush=True)

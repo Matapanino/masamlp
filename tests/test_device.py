@@ -50,10 +50,24 @@ def test_compile_flag_smoke(reg_data):
 
 @pytest.mark.skipif(not cuda_available, reason="CUDA not available")
 def test_cpu_cuda_parity(reg_data):
-    X, y, X_test, _ = reg_data
-    p_cpu = MasaRegressor(device="cpu", **_KW).fit(X, y).predict(X_test)
-    p_gpu = MasaRegressor(device="cuda", amp=False, **_KW).fit(X, y).predict(X_test)
-    np.testing.assert_allclose(p_cpu, p_gpu, atol=1e-2, rtol=1e-2)
+    X, y, X_test, y_test = reg_data
+    m = MasaRegressor(**{**_KW, "device": "cpu", "n_epochs": 30}).fit(X, y)
+    p_cpu = m.predict(X_test)
+    # Inference parity: the same fitted weights must predict (near-)identically
+    # on CUDA. Training trajectories, by contrast, drift apart across devices
+    # (float accumulation order compounds over steps — see docs/devices.md),
+    # so cross-device *training* is compared on quality, not values.
+    m.device = "cuda"
+    np.testing.assert_allclose(p_cpu, m.predict(X_test), atol=1e-4, rtol=1e-4)
+
+    m_gpu = MasaRegressor(
+        **{**_KW, "device": "cuda", "amp": False, "n_epochs": 30}
+    ).fit(X, y)
+    baseline = float(np.sqrt(np.mean((y_test - y.mean()) ** 2)))
+    rmse_cpu = float(np.sqrt(np.mean((p_cpu - y_test) ** 2)))
+    rmse_gpu = float(np.sqrt(np.mean((m_gpu.predict(X_test) - y_test) ** 2)))
+    assert rmse_cpu < 0.8 * baseline and rmse_gpu < 0.8 * baseline
+    assert abs(rmse_cpu - rmse_gpu) < 0.1 * baseline
 
 
 @pytest.mark.skipif(not mps_available, reason="MPS not available")
