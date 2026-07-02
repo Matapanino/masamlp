@@ -10,7 +10,11 @@
 - **HPO presets** — `model_params` presets per model ("fast" / "accurate";
   DANet paper depths 20/24/32 as named presets).
 - **TabM-style ensembling** — parameter-efficient ensemble flag for
-  `resnet`/`realmlp` (Gorishniy et al. 2024).
+  `resnet`/`realmlp` (Gorishniy et al. 2024); distinct from the existing
+  `n_ens` seed ensembling.
+- **Vectorized `n_ens`** — train members jointly via `torch.func`
+  (stacked parameters + vmap, pytabkit's speed trick) for BatchNorm-free
+  models; the current implementation loops.
 - **Per-model estimator aliases** — `ResNetRegressor` etc., thin subclasses.
 
 ## Performance

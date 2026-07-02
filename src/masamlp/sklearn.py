@@ -55,6 +55,7 @@ class BaseMasaModel(BaseEstimator):
         categorical_features: Any = "auto",
         cat_encoding: str = "embedding",
         optimizer_betas: tuple[float, float] | None = None,
+        n_ens: int = 1,
         device: str = "auto",
         amp: str | bool = "auto",
         compile: bool = False,
@@ -79,6 +80,7 @@ class BaseMasaModel(BaseEstimator):
         self.categorical_features = categorical_features
         self.cat_encoding = cat_encoding
         self.optimizer_betas = optimizer_betas
+        self.n_ens = n_ens
         self.device = device
         self.amp = amp
         self.compile = compile
@@ -140,6 +142,10 @@ class BaseMasaModel(BaseEstimator):
             eval_set: Optional list of ``(X, y)`` pairs evaluated after every
                 epoch as ``valid_0``, ``valid_1``, ... in ``evals_result_``.
                 The first metric on ``valid_0`` drives early stopping.
+
+        With ``n_ens > 1``, members train with seeds ``random_state + i`` and
+        each early-stops independently; ``evals_result_``/``best_iteration_``
+        report the first member, and ``model_`` is ``models_[0]``.
         """
         seed_everything(self.random_state)
         y_arr = as_target(y)
@@ -186,52 +192,69 @@ class BaseMasaModel(BaseEstimator):
                 )
             )
 
+        if not isinstance(self.n_ens, int) or self.n_ens < 1:
+            raise ValueError(f"n_ens must be a positive int, got {self.n_ens!r}")
         resolved_params = {**self._model_param_defaults(), **(self.model_params or {})}
-        model = build_model(
-            self.model,
-            resolved_params,
-            n_num=x_num.shape[1],
-            cat_cardinalities=pre.cat_cardinalities_,
-            out_dim=out_dim,
-            num_embedding=self.num_embedding,
-        )
         bias = np.asarray(objective.init_bias(y_enc, weight), dtype=np.float32)
-        if hasattr(model, "output_layer") and bias.shape == (out_dim,):
-            with torch.no_grad():
-                model.output_layer.bias.copy_(torch.from_numpy(bias))
-        if hasattr(model, "set_candidates"):
-            # Retrieval models (TabR) keep the training set as their corpus.
-            # Classification labels go in as class indices for the label
-            # embedding; regression uses the (standardized) float targets.
-            if hasattr(self, "classes_"):
-                cand_y = torch.from_numpy(np.asarray(y_enc, dtype=np.int64))
-            else:
-                cand_y = objective.prepare_target(y_enc)
-            model.set_candidates(train.x_num, train.x_cat, cand_y)
 
-        config = TrainerConfig(
-            n_epochs=self.n_epochs,
-            batch_size=self.batch_size,
-            learning_rate=self.learning_rate,
-            weight_decay=self.weight_decay,
-            optimizer=self.optimizer,
-            betas=self.optimizer_betas,
-            lr_scheduler=self.lr_scheduler,
-            grad_clip=self.grad_clip,
-            device=self.device,
-            amp=self.amp,
-            compile=self.compile,
-            early_stopping_rounds=self.early_stopping_rounds,
-            random_state=self.random_state,
-            verbose=self.verbose,
-            n_threads=self.n_threads,
-        )
-        result = Trainer().fit(
-            model, objective, train, eval_sets, metrics, config, self._inverse_target()
-        )
+        # Ensemble members differ only in their seed (init + shuffling), as
+        # in pytabkit's RealMLP ensembling; predictions are averaged on the
+        # transformed scale (probabilities for classification).
+        members: list[torch.nn.Module] = []
+        first_result = None
+        for member in range(self.n_ens):
+            seed = None if self.random_state is None else self.random_state + member
+            seed_everything(seed)
+            model = build_model(
+                self.model,
+                resolved_params,
+                n_num=x_num.shape[1],
+                cat_cardinalities=pre.cat_cardinalities_,
+                out_dim=out_dim,
+                num_embedding=self.num_embedding,
+            )
+            if hasattr(model, "output_layer") and bias.shape == (out_dim,):
+                with torch.no_grad():
+                    model.output_layer.bias.copy_(torch.from_numpy(bias))
+            if hasattr(model, "set_candidates"):
+                # Retrieval models (TabR/ModernNCA) keep the training set as
+                # their corpus. Classification labels go in as class indices
+                # for the label embedding; regression uses the (standardized)
+                # float targets.
+                if hasattr(self, "classes_"):
+                    cand_y = torch.from_numpy(np.asarray(y_enc, dtype=np.int64))
+                else:
+                    cand_y = objective.prepare_target(y_enc)
+                model.set_candidates(train.x_num, train.x_cat, cand_y)
+
+            config = TrainerConfig(
+                n_epochs=self.n_epochs,
+                batch_size=self.batch_size,
+                learning_rate=self.learning_rate,
+                weight_decay=self.weight_decay,
+                optimizer=self.optimizer,
+                betas=self.optimizer_betas,
+                lr_scheduler=self.lr_scheduler,
+                grad_clip=self.grad_clip,
+                device=self.device,
+                amp=self.amp,
+                compile=self.compile,
+                early_stopping_rounds=self.early_stopping_rounds,
+                random_state=seed,
+                verbose=self.verbose,
+                n_threads=self.n_threads,
+            )
+            result = Trainer().fit(
+                model, objective, train, eval_sets, metrics, config, self._inverse_target()
+            )
+            members.append(model)
+            if first_result is None:
+                first_result = result
 
         self.preprocessor_ = pre
-        self.model_ = model
+        self.models_ = members
+        self.model_ = members[0]
+        result = first_result
         self.resolved_model_params_ = resolved_params
         self.objective_ = objective
         self.transform_name_ = objective.transform_name
@@ -275,10 +298,18 @@ class BaseMasaModel(BaseEstimator):
         self._check_fitted()
         x_num, x_cat = self.preprocessor_.transform(X)
         device = resolve_device(self.device)
-        self.model_.to(device)
         data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat)).to(device)
         transform = self.transform_name_
-        return predict_transformed(self.model_, data, lambda raw: apply_transform(raw, transform))
+        members = getattr(self, "models_", None) or [self.model_]
+        preds = []
+        for model in members:
+            model.to(device)
+            preds.append(
+                predict_transformed(model, data, lambda raw: apply_transform(raw, transform))
+            )
+        # Ensemble average on the transformed scale (probabilities for
+        # classification), matching pytabkit's RealMLP ensembling.
+        return preds[0] if len(preds) == 1 else np.mean(preds, axis=0)
 
     # ------------------------------------------------------------------ #
     # Serialization

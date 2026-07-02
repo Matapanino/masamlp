@@ -76,6 +76,9 @@ The tricks from the RealMLP paper are estimator-level options usable with
 - `lr_scheduler="coslog4"`, `optimizer_betas=(0.9, 0.95)` — the training
   schedule
 - `clip_predictions=True` (regressor) — clip to the observed target range
+- `n_ens=k` — seed ensembling as in pytabkit's RealMLP: k members trained
+  with seeds `random_state + i`, predictions averaged on the probability /
+  value scale; works with every model including the retrieval ones
 
 ```python
 from masamlp import MasaClassifier, realmlp_params

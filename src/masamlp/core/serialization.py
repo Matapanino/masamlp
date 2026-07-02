@@ -87,6 +87,8 @@ def save_model_dir(est: Any, path: str) -> None:
             "y": list(model.cand_y.shape),
             "y_dtype": str(model.cand_y.dtype).removeprefix("torch."),
         }
+    members = getattr(est, "models_", None) or [est.model_]
+    fitted["n_members"] = len(members)
 
     manifest = {
         "library": "masamlp",
@@ -102,7 +104,10 @@ def save_model_dir(est: Any, path: str) -> None:
     (out / _PRE_JSON).write_text(json.dumps(pre_meta, indent=2))
     np.savez(out / _PRE_NPZ, **pre_arrays)
 
-    torch.save(est.model_.state_dict(), out / _STATE)
+    if len(members) == 1:
+        torch.save(members[0].state_dict(), out / _STATE)
+    else:
+        torch.save({"members": [m.state_dict() for m in members]}, out / _STATE)
 
 
 def load_model_dir(path: str, cls: type) -> Any:
@@ -125,27 +130,32 @@ def load_model_dir(path: str, cls: type) -> Any:
     est.preprocessor_ = TabularPreprocessor.from_state(pre_meta, pre_arrays)
 
     resolved_params = fitted.get("resolved_model_params", est.model_params)
-    est.model_ = build_model(
-        est.model,
-        resolved_params,
-        n_num=fitted["n_num"],
-        cat_cardinalities=list(fitted["cat_cardinalities"]),
-        out_dim=fitted["out_dim"],
-        num_embedding=est.num_embedding,
-    )
     est.resolved_model_params_ = resolved_params
-    if "candidate_shapes" in fitted:
-        # Register placeholder buffers so load_state_dict can fill in the
-        # retrieval corpus saved with the model.
-        shapes = fitted["candidate_shapes"]
-        est.model_.set_candidates(
-            torch.zeros(shapes["x_num"], dtype=torch.float32),
-            torch.zeros(shapes["x_cat"], dtype=torch.int64),
-            torch.zeros(shapes["y"], dtype=getattr(torch, shapes["y_dtype"])),
-        )
     state = torch.load(src / _STATE, weights_only=True, map_location="cpu")
-    est.model_.load_state_dict(state)
-    est.model_.eval()
+    states = state["members"] if fitted.get("n_members", 1) > 1 else [state]
+    est.models_ = []
+    for member_state in states:
+        model = build_model(
+            est.model,
+            resolved_params,
+            n_num=fitted["n_num"],
+            cat_cardinalities=list(fitted["cat_cardinalities"]),
+            out_dim=fitted["out_dim"],
+            num_embedding=est.num_embedding,
+        )
+        if "candidate_shapes" in fitted:
+            # Register placeholder buffers so load_state_dict can fill in the
+            # retrieval corpus saved with the model.
+            shapes = fitted["candidate_shapes"]
+            model.set_candidates(
+                torch.zeros(shapes["x_num"], dtype=torch.float32),
+                torch.zeros(shapes["x_cat"], dtype=torch.int64),
+                torch.zeros(shapes["y"], dtype=getattr(torch, shapes["y_dtype"])),
+            )
+        model.load_state_dict(member_state)
+        model.eval()
+        est.models_.append(model)
+    est.model_ = est.models_[0]
 
     est.objective_ = None
     est.transform_name_ = fitted["transform_name"]

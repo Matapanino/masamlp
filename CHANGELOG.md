@@ -17,6 +17,9 @@ Initial release.
   CfC-based liquid network for static tabular data), plus a
   `register_model` hook for custom architectures (token-based models via
   `embedding_kind = "tokens"`).
+- `n_ens` seed ensembling on both estimators (pytabkit semantics: members
+  seeded `random_state + i`, predictions averaged on the transformed scale);
+  save/load stores all members.
 - RealMLP insights as composable estimator options: `numeric_scaler="rssc"`,
   `cat_encoding="onehot"`, numeric embedding zoo
   (`num_embedding="pbld"/"plr"/"pl"/"periodic"`), learnable input scaling
