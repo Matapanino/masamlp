@@ -11,10 +11,12 @@ Initial release.
   (Holzmüller et al. 2024, TD-S architecture with the full training recipe
   in `masamlp.realmlp_params`), `tab_transformer` (Huang et al. 2020),
   `danet` (Chen et al. AAAI 2022), `tabr` (retrieval-augmented, Gorishniy
-  et al. 2023), `modernnca` (Ye et al. 2024, soft-nearest-neighbor), and
-  `lnn` (experimental CfC-based liquid network for static tabular data),
-  plus a `register_model` hook for custom architectures (token-based models
-  via `embedding_kind = "tokens"`).
+  et al. 2023), `modernnca` (Ye et al. 2024, soft-nearest-neighbor),
+  `gandalf` (Joseph & Raj 2022, GFLU with t-softmax feature masks),
+  `grn` (stacked TFT Gated Residual Networks), and `lnn` (experimental
+  CfC-based liquid network for static tabular data), plus a
+  `register_model` hook for custom architectures (token-based models via
+  `embedding_kind = "tokens"`).
 - RealMLP insights as composable estimator options: `numeric_scaler="rssc"`,
   `cat_encoding="onehot"`, numeric embedding zoo
   (`num_embedding="pbld"/"plr"/"pl"/"periodic"`), learnable input scaling

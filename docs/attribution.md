@@ -39,6 +39,14 @@ stopping on any metric), not the model designs.
   ICLR 2024 (arXiv:2307.14338). Clean-room reimplementation following the
   MIT-licensed official repository (yandex-research/tabular-dl-tabr), using
   torch-native search instead of faiss.
+- **GANDALF** — Joseph, Raj, *GANDALF: Gated Adaptive Network for Deep
+  Automated Learning of Features*, 2022 (arXiv:2207.08548). Clean-room
+  reimplementation following the MIT-licensed reference in pytorch_tabular
+  (GFLU with t-softmax masks and R-softmax temperature initialization).
+- **Gated Residual Network (used by GRNNet)** — Lim, Arik, Loeff, Pfister,
+  *Temporal Fusion Transformers for Interpretable Multi-horizon Time Series
+  Forecasting*, 2021 (arXiv:1912.09363). The standalone tabular composition
+  is masaMLP's own.
 - **CfC cell (used by TabularLNN)** — Hasani, Lechner, Amini, et al.,
   *Closed-form Continuous-time Neural Networks*, Nature Machine
   Intelligence 2022. Reference implementation: `ncps` (Apache-2.0),

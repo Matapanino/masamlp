@@ -27,7 +27,15 @@ from masamlp.models.base import (
 )
 from masamlp.models.danet import DANet
 from masamlp.models.ft_transformer import FTTransformer
-from masamlp.models.layers import GhostBatchNorm1d, ScalingLayer, entmax15, sparsemax
+from masamlp.models.gandalf import GandalfNet, GatedFeatureLearningUnit
+from masamlp.models.grn import GatedResidualBlock, GRNNet
+from masamlp.models.layers import (
+    GhostBatchNorm1d,
+    ScalingLayer,
+    entmax15,
+    sparsemax,
+    t_softmax,
+)
 from masamlp.models.lnn import CfCCell, TabularLNN
 from masamlp.models.modernnca import ModernNCA
 from masamlp.models.realmlp import NTPLinear, RealMLPNet
@@ -59,6 +67,8 @@ register_model("tabr")(TabR)
 register_model("ft_transformer")(FTTransformer)
 register_model("tab_transformer")(TabTransformer)
 register_model("modernnca")(ModernNCA)
+register_model("gandalf")(GandalfNet)
+register_model("grn")(GRNNet)
 
 
 def build_model(
@@ -108,6 +118,11 @@ __all__ = [
     "FTTransformer",
     "TabTransformer",
     "ModernNCA",
+    "GandalfNet",
+    "GatedFeatureLearningUnit",
+    "GRNNet",
+    "GatedResidualBlock",
+    "t_softmax",
     "register_model",
     "build_model",
 ]

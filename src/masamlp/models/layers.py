@@ -57,6 +57,23 @@ def sparsemax(x: Tensor, dim: int = -1) -> Tensor:
     return torch.clamp(x - tau, min=0.0)
 
 
+def t_softmax(x: Tensor, t: Tensor, dim: int = -1) -> Tensor:
+    """Temperature-controlled sparse softmax (Joseph & Raj, GANDALF): entries
+    further than ``t`` below the max get (near-)zero weight; ``t`` can be a
+    learnable per-row tensor."""
+    shifted = x - x.max(dim=dim, keepdim=True).values
+    w = torch.relu(shifted + t) + 1e-8
+    return torch.softmax(shifted + torch.log(w), dim=dim)
+
+
+def t_softmax_initial_t(masks: Tensor, sparsity: float, dim: int = -1) -> Tensor:
+    """Per-row ``t`` so that roughly a ``sparsity`` fraction of entries start
+    (near-)zero — the R-softmax initialization from the GANDALF reference."""
+    shifted = masks - masks.max(dim=dim, keepdim=True).values
+    q = torch.tensor(float(sparsity))
+    return (-torch.quantile(shifted.detach(), q, dim=dim, keepdim=True)) + 1e-8
+
+
 def entmax15(x: Tensor, dim: int = -1) -> Tensor:
     """1.5-entmax: sparse simplex mapping between softmax and sparsemax."""
     x = (x - x.max(dim=dim, keepdim=True).values) / 2.0

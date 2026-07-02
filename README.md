@@ -54,6 +54,8 @@ builds on.
 | `danet` | Chen et al. AAAI 2022 (arXiv:2112.02962) | Abstract Layers with learnable sparse feature groups (in-house entmax15) |
 | `tabr` | Gorishniy et al. 2023 (arXiv:2307.14338) | retrieval-augmented: nearest training rows are aggregated into each prediction |
 | `modernnca` | Ye et al. 2024 (arXiv:2407.03257) | soft-nearest-neighbor aggregation with stochastic candidate sampling; pairs well with `num_embedding="plr-lite"` |
+| `gandalf` | Joseph & Raj 2022 (arXiv:2207.08548) | GFLU stages: learnable sparse feature masks (t-softmax) with GRU-style gating; exposes `feature_importances()` |
+| `grn` | GRN blocks from TFT, Lim et al. 2021 (arXiv:1912.09363) | stack of Gated Residual Networks over embedded features (masaMLP's own composition) |
 | `lnn` | CfC cells, Hasani et al. 2022 | **experimental** liquid-network adaptation for static tabular data — see [docs/lnn.md](docs/lnn.md) |
 
 Third-party architectures plug in with `register_model` and get the whole

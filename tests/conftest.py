@@ -16,6 +16,8 @@ TINY_PARAMS = {
     "ft_transformer": {"n_blocks": 1, "d_block": 64, "attention_dropout": 0.1, "ffn_dropout": 0.0},
     "tab_transformer": {"n_layers": 2, "d_token": 16},
     "modernnca": {"dim": 32, "d_block": 64},
+    "gandalf": {"n_stages": 2},
+    "grn": {"d": 32, "d_hidden": 32, "n_blocks": 2},
 }
 
 # Attention models tokenize features; "periodic" has no fixed token width.
@@ -30,9 +32,11 @@ TRAIN_KWARGS = {
         "optimizer_betas": (0.9, 0.95),
         "lr_scheduler": "coslog4",
     },
-    # On numeric-only data TabTransformer's head width scales with the tiny
-    # raw input; PLR numeric embeddings (the intended extension) fix that.
+    # On numeric-only data TabTransformer's head and GANDALF's GFLU operate
+    # in the tiny raw feature space; PLR numeric embeddings (the intended
+    # extension) widen it.
     "tab_transformer": {"learning_rate": 3e-3, "num_embedding": "plr"},
+    "gandalf": {"num_embedding": "plr"},
 }
 
 ALL_MODELS = sorted(TINY_PARAMS)
