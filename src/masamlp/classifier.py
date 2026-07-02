@@ -43,6 +43,8 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
         num_embedding: str | None = None,
         numeric_scaler: str = "quantile",
         categorical_features: Any = "auto",
+        cat_encoding: str = "embedding",
+        optimizer_betas: tuple[float, float] | None = None,
         class_weight: str | dict[Any, float] | None = None,
         label_smoothing: float = 0.0,
         device: str = "auto",
@@ -68,6 +70,8 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
             num_embedding=num_embedding,
             numeric_scaler=numeric_scaler,
             categorical_features=categorical_features,
+            cat_encoding=cat_encoding,
+            optimizer_betas=optimizer_betas,
             device=device,
             amp=amp,
             compile=compile,
@@ -136,6 +140,15 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
 
     def _default_metric_name(self) -> str:
         return "logloss" if len(self.classes_) == 2 else "multi_logloss"
+
+    def _model_param_defaults(self) -> dict[str, Any]:
+        if self.model == "realmlp":
+            # RealMLP-TD-S uses SELU for classification.
+            return {"num_scaling": True, "activation": "selu"}
+        if self.model == "tabr":
+            # The label encoder embeds class indices.
+            return {"n_label_classes": len(self.classes_)}
+        return super()._model_param_defaults()
 
     def predict_proba(self, X: Any) -> np.ndarray:
         """Class probabilities, shape ``(n, n_classes)`` (binary included)."""

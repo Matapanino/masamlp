@@ -47,12 +47,36 @@ builds on.
 
 | name | source | notes |
 |---|---|---|
-| `resnet` | Gorishniy et al. 2021 (arXiv:2106.11959) | default; strong baseline, optionally with PLR/periodic numeric embeddings (arXiv:2203.05556) |
+| `resnet` | Gorishniy et al. 2021 (arXiv:2106.11959) | default; strong baseline |
+| `realmlp` | Holzmüller et al. 2024 (arXiv:2407.04491) | RealMLP-TD-S architecture (scaling layer, NTP linear layers, SELU/Mish); pair with `masamlp.realmlp_params(task)` for the full training recipe |
 | `danet` | Chen et al. AAAI 2022 (arXiv:2112.02962) | Abstract Layers with learnable sparse feature groups (in-house entmax15) |
+| `tabr` | Gorishniy et al. 2023 (arXiv:2307.14338) | retrieval-augmented: nearest training rows are aggregated into each prediction |
 | `lnn` | CfC cells, Hasani et al. 2022 | **experimental** liquid-network adaptation for static tabular data — see [docs/lnn.md](docs/lnn.md) |
 
 Third-party architectures plug in with `register_model` and get the whole
 estimator surface (weights, objectives, metrics, early stopping) for free.
+
+### RealMLP insights are composable options
+
+The tricks from the RealMLP paper are estimator-level options usable with
+*any* model (`lnn` included), not baked into one architecture:
+
+- `numeric_scaler="rssc"` — robust scale + smooth clip preprocessing
+- `cat_encoding="onehot"` — RealMLP-style one-hot (binary → ±1, missing → 0)
+- `num_embedding="pbld" | "plr" | "pl" | "periodic"` — the numeric embedding
+  zoo (arXiv:2203.05556 + PBLD)
+- `model_params={"num_scaling": True}` — learnable per-feature input scale
+- `lr_scheduler="coslog4"`, `optimizer_betas=(0.9, 0.95)` — the training
+  schedule
+- `clip_predictions=True` (regressor) — clip to the observed target range
+
+```python
+from masamlp import MasaClassifier, realmlp_params
+
+clf = MasaClassifier(**realmlp_params("classification"))    # the TD-S recipe
+clf = MasaClassifier(**{**realmlp_params("classification"),
+                        "num_embedding": "pbld"})           # toward RealMLP-TD
+```
 
 ## Install
 

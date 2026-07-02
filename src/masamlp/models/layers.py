@@ -13,6 +13,18 @@ import torch
 from torch import Tensor, nn
 
 
+class ScalingLayer(nn.Module):
+    """Learnable per-feature scale (init 1) — RealMLP's first layer. Trained
+    with a higher learning rate (see ``param_groups`` on RealMLPNet)."""
+
+    def __init__(self, n_features: int) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(n_features))
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x * self.scale
+
+
 class GhostBatchNorm1d(nn.Module):
     """BatchNorm over virtual sub-batches (Hoffer et al. 2017), as used by
     DANet/TabNet to keep normalization statistics healthy at large batch

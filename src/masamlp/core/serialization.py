@@ -58,13 +58,15 @@ def save_model_dir(est: Any, path: str) -> None:
             stacklevel=2,
         )
 
+    x_num_width, _ = est.preprocessor_.transform_width()
     fitted: dict[str, Any] = {
         "n_features_in": est.n_features_in_,
         "feature_names_in": [str(n) for n in est.feature_names_in_],
         "out_dim": est.out_dim_,
         "transform_name": est.transform_name_,
-        "n_num": len(est.preprocessor_.numeric_idx_),
+        "n_num": x_num_width,
         "cat_cardinalities": est.preprocessor_.cat_cardinalities_,
+        "resolved_model_params": est.resolved_model_params_,
         "best_iteration": est.best_iteration_,
         "best_score": est.best_score_,
         "evals_result": est.evals_result_,
@@ -74,6 +76,17 @@ def save_model_dir(est: Any, path: str) -> None:
     if getattr(est, "target_mean_", None) is not None:
         fitted["target_mean"] = est.target_mean_.tolist()
         fitted["target_std"] = est.target_std_.tolist()
+    if getattr(est, "target_min_", None) is not None:
+        fitted["target_min"] = est.target_min_.tolist()
+        fitted["target_max"] = est.target_max_.tolist()
+    if getattr(est.model_, "has_candidates", False):
+        model = est.model_
+        fitted["candidate_shapes"] = {
+            "x_num": list(model.cand_x_num.shape),
+            "x_cat": list(model.cand_x_cat.shape),
+            "y": list(model.cand_y.shape),
+            "y_dtype": str(model.cand_y.dtype).removeprefix("torch."),
+        }
 
     manifest = {
         "library": "masamlp",
@@ -111,14 +124,25 @@ def load_model_dir(path: str, cls: type) -> Any:
         pre_arrays = {k: npz[k] for k in npz.files}
     est.preprocessor_ = TabularPreprocessor.from_state(pre_meta, pre_arrays)
 
+    resolved_params = fitted.get("resolved_model_params", est.model_params)
     est.model_ = build_model(
         est.model,
-        est.model_params,
+        resolved_params,
         n_num=fitted["n_num"],
         cat_cardinalities=list(fitted["cat_cardinalities"]),
         out_dim=fitted["out_dim"],
         num_embedding=est.num_embedding,
     )
+    est.resolved_model_params_ = resolved_params
+    if "candidate_shapes" in fitted:
+        # Register placeholder buffers so load_state_dict can fill in the
+        # retrieval corpus saved with the model.
+        shapes = fitted["candidate_shapes"]
+        est.model_.set_candidates(
+            torch.zeros(shapes["x_num"], dtype=torch.float32),
+            torch.zeros(shapes["x_cat"], dtype=torch.int64),
+            torch.zeros(shapes["y"], dtype=getattr(torch, shapes["y_dtype"])),
+        )
     state = torch.load(src / _STATE, weights_only=True, map_location="cpu")
     est.model_.load_state_dict(state)
     est.model_.eval()
@@ -133,10 +157,13 @@ def load_model_dir(path: str, cls: type) -> Any:
     est.evals_result_ = fitted["evals_result"]
     if "classes" in fitted:
         est.classes_ = np.asarray(fitted["classes"])
-    if "target_mean" in fitted:
-        est.target_mean_ = np.asarray(fitted["target_mean"], dtype=np.float64)
-        est.target_std_ = np.asarray(fitted["target_std"], dtype=np.float64)
-    elif hasattr(est, "target_standardize"):
-        est.target_mean_ = None
-        est.target_std_ = None
+    if hasattr(est, "target_standardize"):
+        est.target_mean_ = est.target_std_ = None
+        est.target_min_ = est.target_max_ = None
+        if "target_mean" in fitted:
+            est.target_mean_ = np.asarray(fitted["target_mean"], dtype=np.float64)
+            est.target_std_ = np.asarray(fitted["target_std"], dtype=np.float64)
+        if "target_min" in fitted:
+            est.target_min_ = np.asarray(fitted["target_min"], dtype=np.float64)
+            est.target_max_ = np.asarray(fitted["target_max"], dtype=np.float64)
     return est

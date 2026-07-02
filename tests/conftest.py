@@ -11,6 +11,19 @@ TINY_PARAMS = {
     "resnet": {"d": 32, "n_blocks": 1},
     "danet": {"n_layers": 2, "base_outdim": 16, "k": 2, "virtual_batch_size": 64},
     "lnn": {"d_hidden": 16, "n_steps": 2, "d_backbone": 32},
+    "realmlp": {"hidden_sizes": [32, 32]},
+    "tabr": {"d_main": 16, "context_size": 8},
+}
+
+# Estimator-level settings some models need to learn quickly in tests
+# (RealMLP's NTP layers are built for its high-lr recipe).
+TRAIN_KWARGS = {
+    "realmlp": {
+        "learning_rate": 0.05,
+        "optimizer": "adam",
+        "optimizer_betas": (0.9, 0.95),
+        "lr_scheduler": "coslog4",
+    },
 }
 
 ALL_MODELS = sorted(TINY_PARAMS)

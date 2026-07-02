@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from conftest import ALL_MODELS, TINY_PARAMS
+from conftest import ALL_MODELS, TINY_PARAMS, TRAIN_KWARGS
 from masamlp.classifier import MasaClassifier
 from masamlp.regressor import MasaRegressor
 
@@ -11,7 +11,7 @@ def test_regression_beats_mean_baseline(name, reg_data):
     X, y, X_test, y_test = reg_data
     m = MasaRegressor(
         model=name, model_params=dict(TINY_PARAMS[name]), n_epochs=40,
-        device="cpu", random_state=0,
+        device="cpu", random_state=0, **TRAIN_KWARGS.get(name, {}),
     ).fit(X, y)
     rmse = float(np.sqrt(np.mean((m.predict(X_test) - y_test) ** 2)))
     baseline = float(np.sqrt(np.mean((y_test - y.mean()) ** 2)))
@@ -23,7 +23,7 @@ def test_binary_classification_beats_prior(name, clf_data):
     X, y, X_test, y_test = clf_data
     m = MasaClassifier(
         model=name, model_params=dict(TINY_PARAMS[name]), n_epochs=40,
-        device="cpu", random_state=0,
+        device="cpu", random_state=0, **TRAIN_KWARGS.get(name, {}),
     ).fit(X, y)
     acc = float((m.predict(X_test) == y_test).mean())
     assert acc > 0.8, f"{name}: accuracy {acc:.3f}"

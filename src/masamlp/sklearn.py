@@ -53,6 +53,8 @@ class BaseMasaModel(BaseEstimator):
         num_embedding: str | None = None,
         numeric_scaler: str = "quantile",
         categorical_features: Any = "auto",
+        cat_encoding: str = "embedding",
+        optimizer_betas: tuple[float, float] | None = None,
         device: str = "auto",
         amp: str | bool = "auto",
         compile: bool = False,
@@ -75,6 +77,8 @@ class BaseMasaModel(BaseEstimator):
         self.num_embedding = num_embedding
         self.numeric_scaler = numeric_scaler
         self.categorical_features = categorical_features
+        self.cat_encoding = cat_encoding
+        self.optimizer_betas = optimizer_betas
         self.device = device
         self.amp = amp
         self.compile = compile
@@ -105,6 +109,13 @@ class BaseMasaModel(BaseEstimator):
     def _inverse_target(self) -> Callable[[np.ndarray], np.ndarray] | None:
         return None
 
+    def _model_param_defaults(self) -> dict[str, Any]:
+        """Architecture defaults per model/task, overridable via
+        ``model_params`` (e.g. RealMLP's SELU-for-classification)."""
+        if self.model == "realmlp":
+            return {"num_scaling": True}
+        return {}
+
     # ------------------------------------------------------------------ #
     # Fitting
     # ------------------------------------------------------------------ #
@@ -133,7 +144,9 @@ class BaseMasaModel(BaseEstimator):
         seed_everything(self.random_state)
         y_arr = as_target(y)
 
-        pre = TabularPreprocessor(self.numeric_scaler, self.categorical_features)
+        pre = TabularPreprocessor(
+            self.numeric_scaler, self.categorical_features, cat_encoding=self.cat_encoding
+        )
         x_num, x_cat = pre.fit(X).transform(X)
         n_rows = x_num.shape[0]
         check_consistent_length(n_rows, y_arr)
@@ -173,9 +186,10 @@ class BaseMasaModel(BaseEstimator):
                 )
             )
 
+        resolved_params = {**self._model_param_defaults(), **(self.model_params or {})}
         model = build_model(
             self.model,
-            self.model_params,
+            resolved_params,
             n_num=x_num.shape[1],
             cat_cardinalities=pre.cat_cardinalities_,
             out_dim=out_dim,
@@ -185,6 +199,15 @@ class BaseMasaModel(BaseEstimator):
         if bias.shape == (out_dim,):
             with torch.no_grad():
                 model.output_layer.bias.copy_(torch.from_numpy(bias))
+        if hasattr(model, "set_candidates"):
+            # Retrieval models (TabR) keep the training set as their corpus.
+            # Classification labels go in as class indices for the label
+            # embedding; regression uses the (standardized) float targets.
+            if hasattr(self, "classes_"):
+                cand_y = torch.from_numpy(np.asarray(y_enc, dtype=np.int64))
+            else:
+                cand_y = objective.prepare_target(y_enc)
+            model.set_candidates(train.x_num, train.x_cat, cand_y)
 
         config = TrainerConfig(
             n_epochs=self.n_epochs,
@@ -192,6 +215,7 @@ class BaseMasaModel(BaseEstimator):
             learning_rate=self.learning_rate,
             weight_decay=self.weight_decay,
             optimizer=self.optimizer,
+            betas=self.optimizer_betas,
             lr_scheduler=self.lr_scheduler,
             grad_clip=self.grad_clip,
             device=self.device,
@@ -208,6 +232,7 @@ class BaseMasaModel(BaseEstimator):
 
         self.preprocessor_ = pre
         self.model_ = model
+        self.resolved_model_params_ = resolved_params
         self.objective_ = objective
         self.transform_name_ = objective.transform_name
         self.out_dim_ = out_dim

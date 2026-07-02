@@ -70,6 +70,42 @@ def test_explicit_categorical_by_name_and_index():
     assert pre2.categorical_idx_ == [1]
 
 
+def test_rssc_scaling_bounded_and_constant_safe():
+    rng = np.random.default_rng(0)
+    X = np.concatenate([rng.lognormal(size=(200, 1)), np.ones((200, 1))], axis=1)
+    pre = TabularPreprocessor(numeric_scaler="rssc").fit(X)
+    z, _ = pre.transform(X)
+    # smooth clip keeps everything in (-3, 3); constant columns stay 0.
+    assert np.all(np.abs(z[:, 0]) < 3.0)
+    assert np.allclose(z[:, 1], 0.0)
+    order = np.argsort(X[:, 0])
+    assert np.all(np.diff(z[order, 0]) >= 0)
+
+
+def test_onehot_encoding_realmlp_style():
+    df = pd.DataFrame({"num": [1.0, 2.0, 3.0], "tri": ["a", "b", "c"], "bin": ["p", "q", "p"]})
+    pre = TabularPreprocessor(numeric_scaler="none", cat_encoding="onehot").fit(df)
+    x_num, x_cat = pre.transform(df)
+    assert x_cat.shape == (3, 0)
+    assert pre.cat_cardinalities_ == []
+    assert pre.transform_width() == (1 + 3 + 1, 0)  # num + 3-way one-hot + binary +-1
+    np.testing.assert_array_equal(x_num[:, 1:4], np.eye(3, dtype=np.float32))
+    np.testing.assert_array_equal(x_num[:, 4], np.array([1.0, -1.0, 1.0], dtype=np.float32))
+    # unknown / missing become all-zeros (0 for the binary column)
+    x_new, _ = pre.transform(pd.DataFrame({"num": [1.0], "tri": ["zzz"], "bin": [None]}))
+    np.testing.assert_array_equal(x_new[0, 1:], np.zeros(4, dtype=np.float32))
+
+
+def test_onehot_state_roundtrip():
+    df = pd.DataFrame({"num": [1.0, 2.0, 3.0, 4.0], "cat": ["a", "b", "c", "a"]})
+    pre = TabularPreprocessor(numeric_scaler="rssc", cat_encoding="onehot").fit(df)
+    restored = TabularPreprocessor.from_state(*pre.get_state())
+    a_num, _ = pre.transform(df)
+    b_num, _ = restored.transform(df)
+    np.testing.assert_array_equal(a_num, b_num)
+    assert restored.transform_width() == pre.transform_width()
+
+
 def test_state_roundtrip():
     df = pd.DataFrame({"num": [1.0, np.nan, 3.0], "cat": ["a", "b", "a"]})
     pre = TabularPreprocessor().fit(df)

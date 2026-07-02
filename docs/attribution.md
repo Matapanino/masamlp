@@ -17,6 +17,17 @@ stopping on any metric), not the model designs.
   for Tabular Data Classification and Regression*, AAAI 2022
   (arXiv:2112.02962). Clean-room reimplementation following the MIT-licensed
   official repository (github.com/WhatAShot/DANet).
+- **RealMLP** — Holzmüller, Ludwig, Klein, *Better by Default: Strong
+  Pre-Tuned MLPs and Boosted Trees on Tabular Data*, NeurIPS 2024
+  (arXiv:2407.04491). The `realmlp` model and its preprocessing/training
+  recipe follow the author's MIT-licensed standalone reference
+  (dholzmueller/realmlp-td-s_standalone); the PBLD embedding variant follows
+  the Apache-2.0 pytabkit implementation, rewritten in-house.
+- **TabR** — Gorishniy, Rubachev, Kartashev, Shlenskii, Kotelnikov, Babenko,
+  *TabR: Unlocking the Power of Retrieval-Augmented Tabular Deep Learning*,
+  ICLR 2024 (arXiv:2307.14338). Clean-room reimplementation following the
+  MIT-licensed official repository (yandex-research/tabular-dl-tabr), using
+  torch-native search instead of faiss.
 - **CfC cell (used by TabularLNN)** — Hasani, Lechner, Amini, et al.,
   *Closed-form Continuous-time Neural Networks*, Nature Machine
   Intelligence 2022. Reference implementation: `ncps` (Apache-2.0),

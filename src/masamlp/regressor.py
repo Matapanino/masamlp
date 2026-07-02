@@ -40,7 +40,10 @@ class MasaRegressor(RegressorMixin, BaseMasaModel):
         num_embedding: str | None = None,
         numeric_scaler: str = "quantile",
         categorical_features: Any = "auto",
+        cat_encoding: str = "embedding",
+        optimizer_betas: tuple[float, float] | None = None,
         target_standardize: bool = True,
+        clip_predictions: bool = False,
         device: str = "auto",
         amp: str | bool = "auto",
         compile: bool = False,
@@ -64,6 +67,8 @@ class MasaRegressor(RegressorMixin, BaseMasaModel):
             num_embedding=num_embedding,
             numeric_scaler=numeric_scaler,
             categorical_features=categorical_features,
+            cat_encoding=cat_encoding,
+            optimizer_betas=optimizer_betas,
             device=device,
             amp=amp,
             compile=compile,
@@ -72,6 +77,7 @@ class MasaRegressor(RegressorMixin, BaseMasaModel):
             random_state=random_state,
         )
         self.target_standardize = target_standardize
+        self.clip_predictions = clip_predictions
 
     def _setup_target(self, y: np.ndarray) -> tuple[BaseObjective, np.ndarray]:
         if y.dtype == object:
@@ -87,6 +93,14 @@ class MasaRegressor(RegressorMixin, BaseMasaModel):
             )
 
         y_enc = np.asarray(y, dtype=np.float64)
+        # RealMLP-style output clipping: predictions never leave the observed
+        # target range (original scale).
+        if self.clip_predictions:
+            self.target_min_ = np.atleast_1d(y_enc.min(axis=0)).astype(np.float64)
+            self.target_max_ = np.atleast_1d(y_enc.max(axis=0)).astype(np.float64)
+        else:
+            self.target_min_ = None
+            self.target_max_ = None
         # Raw outputs must live on the target scale for standardization to be
         # invertible; skip it for log-link objectives like Poisson.
         standardize = self.target_standardize and objective.transform_name == "identity"
@@ -108,13 +122,27 @@ class MasaRegressor(RegressorMixin, BaseMasaModel):
     def _default_metric_name(self) -> str:
         return "rmse"
 
+    def _model_param_defaults(self) -> dict[str, Any]:
+        if self.model == "realmlp":
+            # RealMLP-TD-S uses Mish for regression.
+            return {"num_scaling": True, "activation": "mish"}
+        return super()._model_param_defaults()
+
     def _inverse_target(self) -> Callable[[np.ndarray], np.ndarray] | None:
-        if self.target_mean_ is None:
-            return None
         mean, std = self.target_mean_, self.target_std_
-        if mean.shape[0] == 1:
-            return lambda p: p * std[0] + mean[0]
-        return lambda p: p * std + mean
+        tmin, tmax = self.target_min_, self.target_max_
+        if mean is None and tmin is None:
+            return None
+        scalar = (mean if mean is not None else tmin).shape[0] == 1
+
+        def inverse(p: np.ndarray) -> np.ndarray:
+            if mean is not None:
+                p = p * (std[0] if scalar else std) + (mean[0] if scalar else mean)
+            if tmin is not None:
+                p = np.clip(p, tmin[0] if scalar else tmin, tmax[0] if scalar else tmax)
+            return p
+
+        return inverse
 
     def predict(self, X: Any) -> np.ndarray:
         """Predict on the original target scale; ``(n,)`` for single-output,

@@ -34,6 +34,7 @@ class TrainerConfig:
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
     optimizer: str = "adamw"
+    betas: tuple[float, float] | None = None
     lr_scheduler: str = "none"
     grad_clip: float | None = None
     device: str = "auto"
@@ -109,16 +110,52 @@ def predict_transformed(
     return pred[:, 0] if pred.ndim == 2 and pred.shape[1] == 1 else pred
 
 
+def _build_param_groups(
+    model: nn.Module, extra_modules: list[nn.Module], lr: float
+) -> list[dict]:
+    """Optimizer param groups. Models may expose ``param_groups()`` returning
+    ``[{"params": [...], "lr_factor": f}, ...]`` (RealMLP trains its scaling
+    layer at 6x and biases at 0.1x); schedulers preserve the factors."""
+    if hasattr(model, "param_groups"):
+        groups = [dict(g) for g in model.param_groups()]
+    else:
+        groups = [{"params": [p for p in model.parameters() if p.requires_grad]}]
+    for module in extra_modules:
+        params = [p for p in module.parameters() if p.requires_grad]
+        if params:
+            groups.append({"params": params})
+    for group in groups:
+        group.setdefault("lr_factor", 1.0)
+        group["lr"] = lr * group["lr_factor"]
+    return [g for g in groups if g["params"]]
+
+
 def _make_optimizer(
-    name: str, params: list[Tensor], lr: float, weight_decay: float
+    name: str,
+    groups: list[dict],
+    lr: float,
+    weight_decay: float,
+    betas: tuple[float, float] | None,
 ) -> torch.optim.Optimizer:
     if name == "adamw":
-        return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+        return torch.optim.AdamW(
+            groups, lr=lr, weight_decay=weight_decay, betas=betas or (0.9, 0.999)
+        )
     if name == "adam":
-        return torch.optim.Adam(params, lr=lr, weight_decay=weight_decay)
+        return torch.optim.Adam(
+            groups, lr=lr, weight_decay=weight_decay, betas=betas or (0.9, 0.999)
+        )
     if name == "sgd":
-        return torch.optim.SGD(params, lr=lr, momentum=0.9, weight_decay=weight_decay)
+        if betas is not None:
+            raise ValueError("betas is only supported for adam/adamw")
+        return torch.optim.SGD(groups, lr=lr, momentum=0.9, weight_decay=weight_decay)
     raise ValueError(f"Unknown optimizer {name!r}. Expected 'adamw', 'adam', or 'sgd'")
+
+
+def _coslog4(t: float) -> float:
+    """RealMLP's lr factor: ``0.5 - 0.5*cos(2*pi*log2(1 + 15*t))`` for
+    ``t`` in [0, 1] — warmup, one full oscillation, and decay to ~0."""
+    return float(0.5 - 0.5 * np.cos(2 * np.pi * np.log2(1 + 15 * t)))
 
 
 def _resolve_batch_size(config: TrainerConfig, n_rows: int) -> int:
@@ -156,17 +193,20 @@ class Trainer:
         eval_sets = [EvalSet(es.name, es.data.to(device), es.y_metric) for es in eval_sets]
 
         run_model = maybe_compile(model, config.compile, device)
-        params = [p for p in model.parameters() if p.requires_grad]
-        for module in extra_modules:
-            params += [p for p in module.parameters() if p.requires_grad]
+        groups = _build_param_groups(model, extra_modules, config.learning_rate)
+        params = [p for g in groups for p in g["params"]]
         optimizer = _make_optimizer(
-            config.optimizer, params, config.learning_rate, config.weight_decay
+            config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas
         )
         scheduler = None
+        per_step_schedule = None
         if config.lr_scheduler == "cosine":
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=config.n_epochs
             )
+        elif config.lr_scheduler == "coslog4":
+            # RealMLP's schedule, applied per optimizer step over the whole run.
+            per_step_schedule = _coslog4
         elif config.lr_scheduler != "none":
             raise ValueError(f"Unknown lr_scheduler {config.lr_scheduler!r}")
 
@@ -213,6 +253,14 @@ class Trainer:
             scaler.update()
             return loss.detach()
 
+        steps_per_epoch = 1 if full_batch else int(np.ceil(n / batch_size))
+        total_steps = max(1, config.n_epochs * steps_per_epoch)
+        global_step = 0
+        # Retrieval models (TabR) need to know which candidate rows are in the
+        # current training batch to exclude themselves from their context.
+        wants_batch_indices = getattr(model, "wants_batch_indices", False)
+        full_idx = torch.arange(n, device=device) if wants_batch_indices else None
+
         first_step = True
         for epoch in range(config.n_epochs):
             run_model.train()
@@ -224,6 +272,13 @@ class Trainer:
             )
             for idx in batches:
                 batch = train if idx is None else train.slice(idx)
+                if per_step_schedule is not None:
+                    factor = per_step_schedule(global_step / total_steps)
+                    for group in optimizer.param_groups:
+                        group["lr"] = config.learning_rate * group["lr_factor"] * factor
+                if wants_batch_indices:
+                    model.current_batch_indices = idx if idx is not None else full_idx
+                global_step += 1
                 if first_step and run_model is not model:
                     # torch.compile backends fail lazily, on the first real
                     # step — recover by dropping to eager (same parameters).
@@ -284,6 +339,8 @@ class Trainer:
                 if stopper.should_stop:
                     break
 
+        if wants_batch_indices:
+            model.current_batch_indices = None
         if stopper is not None and best_state is not None:
             model.load_state_dict(best_state)
             model.to(device)

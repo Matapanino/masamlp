@@ -16,14 +16,16 @@ from torch import nn
 
 from masamlp.models.base import FeatureEmbedding, PeriodicEmbedding, PLREmbedding
 from masamlp.models.danet import DANet
-from masamlp.models.layers import GhostBatchNorm1d, entmax15, sparsemax
+from masamlp.models.layers import GhostBatchNorm1d, ScalingLayer, entmax15, sparsemax
 from masamlp.models.lnn import CfCCell, TabularLNN
+from masamlp.models.realmlp import NTPLinear, RealMLPNet
 from masamlp.models.resnet import TabularResNet
+from masamlp.models.tabr import TabR
 
 _MODEL_REGISTRY: dict[str, Callable[..., nn.Module]] = {}
 
 # FeatureEmbedding options accepted inside model_params for every model.
-_EMBEDDING_KEYS = ("d_num_embedding", "n_frequencies", "sigma", "cat_emb_dim")
+_EMBEDDING_KEYS = ("d_num_embedding", "n_frequencies", "sigma", "cat_emb_dim", "num_scaling")
 
 
 def register_model(name: str) -> Callable[[Callable[..., nn.Module]], Callable[..., nn.Module]]:
@@ -39,6 +41,8 @@ def register_model(name: str) -> Callable[[Callable[..., nn.Module]], Callable[.
 register_model("resnet")(TabularResNet)
 register_model("danet")(DANet)
 register_model("lnn")(TabularLNN)
+register_model("realmlp")(RealMLPNet)
+register_model("tabr")(TabR)
 
 
 def build_model(
@@ -67,12 +71,16 @@ __all__ = [
     "PeriodicEmbedding",
     "PLREmbedding",
     "GhostBatchNorm1d",
+    "ScalingLayer",
     "sparsemax",
     "entmax15",
     "TabularResNet",
     "DANet",
     "TabularLNN",
     "CfCCell",
+    "RealMLPNet",
+    "NTPLinear",
+    "TabR",
     "register_model",
     "build_model",
 ]

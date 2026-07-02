@@ -21,6 +21,11 @@
   the first allocation. `resolve_device` probes with a real allocation
   (`mps_functional()`); `device="auto"` falls back to CPU there, and explicit
   `device="mps"` raises.
+- **KI-008 — TabR re-encodes all candidates every training step.** The
+  retrieval search runs over the whole training set per batch (the original
+  design); fine for the small/medium datasets this library targets, O(N)
+  per step otherwise. Candidate subsampling and inference-time key caching
+  are on the roadmap.
 - **KI-006 — custom objective/metric objects are not serialized.**
   `save_model` warns and stores everything needed for prediction; refitting
   a loaded estimator requires re-setting the custom objects.

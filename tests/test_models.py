@@ -8,14 +8,18 @@ from masamlp.models.layers import entmax15, sparsemax
 
 def _forward(name, n_num=4, cards=(3, 5), out_dim=2, num_embedding=None, n=32):
     torch.manual_seed(0)
-    model = build_model(
-        name, dict(TINY_PARAMS[name]), n_num, list(cards), out_dim, num_embedding
-    )
+    params = dict(TINY_PARAMS[name])
+    if name == "tabr" and out_dim > 1:
+        params["n_label_classes"] = out_dim  # multiclass; multi-output reg unsupported
+    model = build_model(name, params, n_num, list(cards), out_dim, num_embedding)
     x_num = torch.randn(n, n_num)
     if cards:
         x_cat = torch.stack([torch.randint(0, c, (n,)) for c in cards], dim=1)
     else:
         x_cat = torch.zeros(n, 0, dtype=torch.int64)
+    if hasattr(model, "set_candidates"):
+        y = torch.randint(0, out_dim, (n,)) if out_dim > 1 else torch.randn(n, 1)
+        model.set_candidates(x_num, x_cat, y)
     return model, model(x_num, x_cat)
 
 
