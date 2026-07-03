@@ -72,6 +72,10 @@ class FTTransformer(nn.Module):
     """Defaults are the reference's ``get_default_kwargs(n_blocks=3)``."""
 
     embedding_kind = "tokens"
+    # amp="auto" resolves to off: fp16 autocast measured slower AND less
+    # accurate on T4 (2026-07-03 verdict: fit 19.4s->24.7s, rmse
+    # 0.296->0.345 at 30k rows). Explicit amp=True still forces it.
+    amp_auto = False
 
     def __init__(
         self,

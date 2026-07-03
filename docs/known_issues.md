@@ -12,7 +12,9 @@
   gated off on MPS; requesting `amp=True` on MPS warns and runs float32.
 - **KI-004 — cross-device reproducibility.** Same seed on the same device
   is reproducible; CPU vs CUDA vs MPS results differ by accumulated float
-  error (documented, not fixable).
+  error (documented, not fixable). The same applies to multi-GPU sharded
+  ensembles (0.3.0): reproducible for a fixed GPU topology, expected — but
+  not guaranteed — to match a single-device run on identical GPU models.
 - **KI-005 — categorical values are keyed by `str(value)`.** `1` and `"1"`
   in the same column collide into one category. Consistent across fit and
   transform, but a semantic surprise for mixed-type columns.
@@ -26,15 +28,20 @@
   GhostBatchNorm. Fixed by computing the grouped projection as a batched
   einsum over the same parameters and fusing GBN's chunk loop: T4 171.5s ->
   3.4s, CPU 251.8s -> 17.6s on the smoke workload, identical math.
-- **KI-010 — TabR gains nothing from AMP.** autocast around cdist/topk
-  roughly doubled fit time on T4 (10.7s -> 21.3s); use ``amp=False`` for
-  ``tabr``.
-- **KI-008 — TabR re-encodes all candidates every training step.** The
-  retrieval search runs over the whole training set per batch (the original
-  design); fine for the small/medium datasets this library targets, O(N)
-  per step otherwise. Bound the corpus with ``candidate_budget`` (0.2.0, a
-  seeded stratified subsample of `tabr`/`modernnca` candidates); inference-time
-  key caching is still on the roadmap.
+- **KI-010 — TabR gains nothing from AMP (RESOLVED 0.3.0).** autocast
+  around cdist/topk roughly doubled fit time on T4 (10.7s -> 21.3s). Fixed
+  by the per-model AMP policy: ``amp="auto"`` now resolves to off for the
+  retrieval models (``amp_auto = False`` on ``tabr``/``modernnca``); an
+  explicit ``amp=True`` still forces it.
+- **KI-008 — TabR re-encodes all candidates every training step
+  (inference side RESOLVED 0.3.0).** The retrieval search runs over the
+  whole training set per batch (the original design); at *training* time
+  this remains O(N) per step by design — bound the corpus with
+  ``candidate_budget`` (0.2.0). The *inference* side is fixed in 0.3.0:
+  candidate keys (TabR) / encodings (ModernNCA) are computed once per
+  predict pass and cached, and scoring is streamed in
+  ``candidate_chunk_size`` blocks, so eval peak memory is B x chunk instead
+  of the B x N matrix that OOM'd ModernNCA at 345k rows.
 - **KI-006 — custom objective/metric objects are not serialized.**
   `save_model` warns and stores everything needed for prediction; refitting
   a loaded estimator requires re-setting the custom objects.

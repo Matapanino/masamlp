@@ -26,14 +26,17 @@
 
 - `torch.compile` tuning (mode/dynamic settings) and CUDA graphs for the
   full-batch path.
-- TabR: cached candidate keys at inference. (Training-time corpus bounding
-  shipped as `candidate_budget`.)
-- ModernNCA: chunked candidate scoring in the eval path to bound peak memory
-  independently of `candidate_budget`.
+- Multi-GPU: per-GPU vmapped subgroups for `ens_mode="vectorized"`
+  (loop-mode member sharding shipped in 0.3.0), AMP/grad-clip inside the
+  vmapped path.
+- Dedupe retrieval candidate buffers in multi-member checkpoints (the corpus
+  is currently serialized once per member in `model_state.pt`).
 - DANet inference-time mask fusion (structure re-parameterization from the
   paper) to speed up prediction.
 - Single-table categorical embedding (offset trick) when many categorical
   columns are present.
+- (Shipped in 0.3.0: TabR inference-time key caching, ModernNCA chunked
+  eval scoring, per-model AMP auto-policy, multi-GPU member sharding.)
 
 ## Models
 

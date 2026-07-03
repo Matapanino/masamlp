@@ -48,11 +48,12 @@ def test_amp_auto_respects_model_policy():
     assert resolve_amp("auto", torch.device("cpu"), torch.nn.Linear(2, 2)) == (False, None)
 
 
-def test_retrieval_models_opt_out_of_auto_amp():
-    from masamlp.models import ModernNCA, TabR
+def test_amp_auto_model_flags():
+    from masamlp.models import FTTransformer, ModernNCA, TabR
 
-    assert TabR.amp_auto is False
+    assert TabR.amp_auto is False  # KI-010
     assert ModernNCA.amp_auto is False
+    assert FTTransformer.amp_auto is False  # slower + less accurate on T4
 
 
 def test_n_threads_runs(reg_data):
