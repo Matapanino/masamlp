@@ -139,3 +139,13 @@ def test_vectorized_rejects_ineligible_models(reg_data):
                       n_ens=2, ens_mode="vectorized", n_epochs=2, device="cpu").fit(X, y)
     with pytest.raises(ValueError, match="grad_clip"):
         MasaRegressor(n_ens=2, ens_mode="vectorized", grad_clip=1.0, **_KW).fit(X, y)
+
+
+def test_vectorized_bn_error_names_model_and_is_early(reg_data):
+    # n_epochs is large but the raise must happen before any training, with a
+    # message that names the offending model.
+    X, y, _, _ = reg_data
+    with pytest.raises(ValueError, match="resnet"):
+        MasaRegressor(model="resnet", model_params={"d": 32, "n_blocks": 1},
+                      n_ens=2, ens_mode="vectorized", n_epochs=5000,
+                      device="cpu", random_state=0).fit(X, y)

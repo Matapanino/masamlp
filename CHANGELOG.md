@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.0 (2026-07-03)
+
+Field-report follow-up from running the 0.1.0 model zoo in production on a
+large, imbalanced Kaggle task (`docs/s6e7-field-report.md`).
+
+- **DANet stability fix.** `danet` could diverge to a non-finite training
+  trajectory and crash inside `entmax15` (`gather(-1)` IndexError / CUDA
+  device-side assert) at real-data scale. Root cause: feeding DANet's raw
+  `mask_weight` parameter through entmax's `sqrt`, whose gradient is infinite
+  at the support boundary and poisoned the parameter to NaN. `entmax15` now
+  uses a gradient-bounded `sqrt` (no more NaN genesis) and clamps `k_star >= 1`
+  (a non-finite input degrades to a clean non-finite-loss error instead of a
+  hard crash). Also hardens `gandalf`, which shares `entmax15`.
+- **`ema_decay`** — exponential moving average (Polyak averaging) of the model
+  parameters on both estimators. When set (e.g. `0.999`), per-epoch
+  evaluation, early-stopping best-epoch selection, and the final fitted
+  weights all use the EMA copy. Not supported with `ens_mode="vectorized"`.
+- **`candidate_budget`** — bounds the retrieval corpus of `tabr`/`modernnca`
+  (and the aligned training rows, keeping per-row self-exclusion valid) with a
+  seeded, class-stratified subsample. Fixes `modernnca` OOM and `tabr`
+  superlinear scaling on large data; a no-op for non-retrieval models.
+- **Vectorized-ensemble guardrail.** `ens_mode="vectorized"` with a BatchNorm
+  or retrieval model now raises a model-named error *before* training starts
+  (previously only deep in the fit), and the limitation is documented on the
+  estimator.
+- Docs: note that early stopping should monitor a probability-quality metric
+  (`logloss`/`multi_logloss`) rather than a discrete task metric on imbalanced
+  data (`docs/known_issues.md`).
+
 ## 0.1.0 (2026-07-02)
 
 Initial release.

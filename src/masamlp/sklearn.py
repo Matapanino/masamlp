@@ -58,6 +58,8 @@ class BaseMasaModel(BaseEstimator):
         n_ens: int = 1,
         ens_mode: str = "loop",
         weight_decay_schedule: str = "none",
+        ema_decay: float | None = None,
+        candidate_budget: int | None = None,
         device: str = "auto",
         amp: str | bool = "auto",
         compile: bool = False,
@@ -85,6 +87,8 @@ class BaseMasaModel(BaseEstimator):
         self.n_ens = n_ens
         self.ens_mode = ens_mode
         self.weight_decay_schedule = weight_decay_schedule
+        self.ema_decay = ema_decay
+        self.candidate_budget = candidate_budget
         self.device = device
         self.amp = amp
         self.compile = compile
@@ -150,6 +154,10 @@ class BaseMasaModel(BaseEstimator):
         With ``n_ens > 1``, members train with seeds ``random_state + i`` and
         each early-stops independently; ``evals_result_``/``best_iteration_``
         report the first member, and ``model_`` is ``models_[0]``.
+        ``ens_mode="vectorized"`` trains all members in one vmapped pass for a
+        ~k× speedup, but only for BatchNorm-free models (grn/realmlp/
+        ft_transformer/gandalf/lnn); resnet/danet/modernnca keep the default
+        ``ens_mode="loop"`` (a clear error is raised before training otherwise).
         """
         seed_everything(self.random_state)
         y_arr = as_target(y)
@@ -200,6 +208,10 @@ class BaseMasaModel(BaseEstimator):
             raise ValueError(f"n_ens must be a positive int, got {self.n_ens!r}")
         if self.ens_mode not in ("loop", "vectorized"):
             raise ValueError(f"ens_mode must be 'loop' or 'vectorized', got {self.ens_mode!r}")
+        if self.ema_decay is not None and self.ens_mode == "vectorized" and self.n_ens > 1:
+            raise ValueError(
+                "ema_decay is not supported with ens_mode='vectorized'; use ens_mode='loop'"
+            )
         resolved_params = {**self._model_param_defaults(), **(self.model_params or {})}
         bias = np.asarray(objective.init_bias(y_enc, weight), dtype=np.float32)
 
@@ -222,17 +234,33 @@ class BaseMasaModel(BaseEstimator):
             if hasattr(model, "output_layer") and bias.shape == (out_dim,):
                 with torch.no_grad():
                     model.output_layer.bias.copy_(torch.from_numpy(bias))
-            if hasattr(model, "set_candidates"):
-                # Retrieval models (TabR/ModernNCA) keep the training set as
-                # their corpus. Classification labels go in as class indices
-                # for the label embedding; regression uses the (standardized)
-                # float targets.
-                if hasattr(self, "classes_"):
-                    cand_y = torch.from_numpy(np.asarray(y_enc, dtype=np.int64))
-                else:
-                    cand_y = objective.prepare_target(y_enc)
-                model.set_candidates(train.x_num, train.x_cat, cand_y)
             members.append(model)
+
+        if self.ens_mode == "vectorized" and self.n_ens > 1:
+            # Fail fast, before any training or candidate setup, with a
+            # model-aware message (BatchNorm / retrieval models are ineligible).
+            from masamlp.core.ensemble import check_vectorizable
+
+            check_vectorizable(members[0], self.model)
+
+        if hasattr(members[0], "set_candidates"):
+            # Retrieval models (TabR/ModernNCA) keep the training set as their
+            # retrieval corpus. ``candidate_budget`` bounds that corpus with a
+            # seeded, class-stratified subsample — and subsamples the aligned
+            # training rows with it so each row's self-exclusion index stays
+            # valid — to fix modernnca OOM / tabr superlinearity at scale.
+            cand_idx = self._candidate_corpus_index(y_enc, n_rows)
+            if cand_idx is not None:
+                train = train.slice(torch.from_numpy(cand_idx))
+                y_enc = y_enc[cand_idx]
+            # Classification labels go in as class indices for the label
+            # embedding; regression uses the (standardized) float targets.
+            if hasattr(self, "classes_"):
+                cand_y = torch.from_numpy(np.asarray(y_enc, dtype=np.int64))
+            else:
+                cand_y = objective.prepare_target(y_enc)
+            for model in members:
+                model.set_candidates(train.x_num, train.x_cat, cand_y)
 
         def member_config(seed: int | None) -> TrainerConfig:
             return TrainerConfig(
@@ -245,6 +273,7 @@ class BaseMasaModel(BaseEstimator):
                 lr_scheduler=self.lr_scheduler,
                 weight_decay_schedule=self.weight_decay_schedule,
                 grad_clip=self.grad_clip,
+                ema_decay=self.ema_decay,
                 device=self.device,
                 amp=self.amp,
                 compile=self.compile,
@@ -305,6 +334,26 @@ class BaseMasaModel(BaseEstimator):
                     f"eval_metric entries must be str/BaseMetric/callable, got {item!r}"
                 )
         return metrics
+
+    def _candidate_corpus_index(self, y_enc: np.ndarray, n_rows: int) -> np.ndarray | None:
+        """Seeded corpus subsample (class-stratified for classification) for
+        retrieval models, or ``None`` when ``candidate_budget`` imposes no
+        bound. Only meaningful for ``tabr``/``modernnca``; ignored otherwise."""
+        budget = self.candidate_budget
+        if budget is None or n_rows <= budget:
+            return None
+        if not isinstance(budget, int) or budget < 1:
+            raise ValueError(f"candidate_budget must be a positive int, got {budget!r}")
+        from sklearn.model_selection import train_test_split
+
+        stratify = y_enc if hasattr(self, "classes_") else None
+        idx, _ = train_test_split(
+            np.arange(n_rows),
+            train_size=budget,
+            random_state=self.random_state,
+            stratify=stratify,
+        )
+        return np.sort(idx)
 
     # ------------------------------------------------------------------ #
     # Prediction
