@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-07-03)
 
 Speed release: retrieval-model inference cost, per-model AMP policy, and
 multi-GPU ensemble training.
