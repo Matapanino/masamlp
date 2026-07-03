@@ -34,9 +34,14 @@ def test_amp_gating():
         resolve_amp("banana", cpu)
 
 
-def test_amp_auto_respects_model_policy():
+def test_amp_auto_respects_model_policy(monkeypatch):
+    import masamlp.core.device as device_mod
+
     class _NoAmp(torch.nn.Module):
         amp_auto = False
+
+    class _Bf16Only(torch.nn.Module):
+        amp_auto = "bf16"
 
     # The model gate fires before any CUDA API call, so a cuda device object
     # is safe to pass on CUDA-less machines.
@@ -46,6 +51,11 @@ def test_amp_auto_respects_model_policy():
     assert enabled and dtype == torch.bfloat16
     # Models without the attribute keep the plain auto behavior.
     assert resolve_amp("auto", torch.device("cpu"), torch.nn.Linear(2, 2)) == (False, None)
+    # amp_auto="bf16": AMP under auto only when the device dtype is bf16.
+    monkeypatch.setattr(device_mod, "_cuda_amp_dtype", lambda device: torch.float16)
+    assert resolve_amp("auto", torch.device("cuda"), _Bf16Only()) == (False, None)
+    monkeypatch.setattr(device_mod, "_cuda_amp_dtype", lambda device: torch.bfloat16)
+    assert resolve_amp("auto", torch.device("cuda"), _Bf16Only()) == (True, torch.bfloat16)
 
 
 def test_amp_auto_model_flags():
@@ -53,7 +63,21 @@ def test_amp_auto_model_flags():
 
     assert TabR.amp_auto is False  # KI-010
     assert ModernNCA.amp_auto is False
-    assert FTTransformer.amp_auto is False  # slower + less accurate on T4
+    assert FTTransformer.amp_auto == "bf16"  # fp16 slower + less accurate on T4
+
+
+def test_module_device_falls_back_to_buffers():
+    from masamlp.core.device import module_device
+
+    assert module_device(torch.nn.Linear(2, 2)) == torch.device("cpu")
+
+    class _BufferOnly(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("stats", torch.zeros(3))
+
+    assert module_device(_BufferOnly()) == torch.device("cpu")
+    assert module_device(torch.nn.Module()) == torch.device("cpu")
 
 
 def test_n_threads_runs(reg_data):

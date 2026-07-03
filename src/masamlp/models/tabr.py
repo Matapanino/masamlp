@@ -115,23 +115,21 @@ class TabR(RetrievalBase):
         return x, k
 
     def _candidate_keys(self) -> Tensor:
-        n = self.cand_y.shape[0]
-        keys = []
-        for start in range(0, n, self.candidate_chunk_size):
-            stop = min(start + self.candidate_chunk_size, n)
-            keys.append(self._encode(self.cand_x_num[start:stop], self.cand_x_cat[start:stop])[1])
-        return torch.cat(keys)
+        return torch.cat(
+            [
+                self._encode(self.cand_x_num[start:stop], self.cand_x_cat[start:stop])[1]
+                for start, stop in self._chunk_bounds(self.cand_y.shape[0])
+            ]
+        )
 
     def _search_topk(self, k: Tensor, cand_k: Tensor, m: int, exclude: Tensor | None) -> Tensor:
         """Nearest-candidate indices ``(B, m)`` by L2, streamed over
         ``candidate_chunk_size`` blocks so peak memory is B x chunk. Row ``i``
         excludes global candidate index ``exclude[i]`` when given. Matches an
         unchunked ``cdist(...).topk(...)`` up to ties in the distances."""
-        n = cand_k.shape[0]
         best_vals: Tensor | None = None
         best_idx: Tensor | None = None
-        for start in range(0, n, self.candidate_chunk_size):
-            stop = min(start + self.candidate_chunk_size, n)
+        for start, stop in self._chunk_bounds(cand_k.shape[0]):
             dists = torch.cdist(k, cand_k[start:stop])
             if exclude is not None:
                 local = exclude - start

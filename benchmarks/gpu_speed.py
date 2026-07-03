@@ -163,7 +163,10 @@ def main() -> None:
         model="lnn", model_params={"d_hidden": 64, "n_steps": 3, "d_backbone": 128},
         n_ens=8, n_epochs=25,
     )
-    devices = ([] if args.skip_cpu else ["cpu"]) + (["cuda"] if has_cuda else [])
+    # "cuda:0", not "cuda": on multi-GPU hosts the index-less device would
+    # shard the loop-mode ensemble while vectorized stays single-device,
+    # invalidating the comparison (use --multi-gpu for the sharded numbers).
+    devices = ([] if args.skip_cpu else ["cpu"]) + (["cuda:0"] if has_cuda else [])
     for device in devices:
         for mode in ("loop", "vectorized"):
             run_one(f"lnn n_ens=8 [{mode}]", dict(ens_kwargs, ens_mode=mode),

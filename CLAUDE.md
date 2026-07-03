@@ -17,8 +17,10 @@ on any metric** first-class.
   what guarantees sample_weight works for every objective, including customs.
 - **Models are pure `nn.Module`s** with `forward(x_num, x_cat) -> raw` and an
   `output_layer` attribute (final `nn.Linear`) for bias initialization. All
-  device/AMP/compile/batching/early-stopping logic lives in `core/trainer.py`
-  only.
+  device/AMP/compile/batching/early-stopping logic lives in `core/`
+  (trainer.py, device.py, parallel.py). Models may *declare* policy via
+  class attributes (`amp_auto`, `static_state_keys`, `wants_batch_indices`)
+  but never implement device logic.
 - **No DataLoader.** Tensors are moved to the device once; minibatches are
   index slices. Small data (<= ~4096 rows) trains full-batch.
 - **Metrics are NumPy** (`(y_true, y_pred) -> float`), computed on

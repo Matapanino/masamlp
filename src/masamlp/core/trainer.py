@@ -71,6 +71,9 @@ class EvalSet:
     data: TabularData
     y_metric: np.ndarray
 
+    def to(self, device: torch.device) -> EvalSet:
+        return EvalSet(self.name, self.data.to(device), self.y_metric)
+
 
 @dataclass
 class TrainResult:
@@ -247,7 +250,7 @@ class Trainer:
         for module in extra_modules:
             module.to(device)
         train = train.to(device)
-        eval_sets = [EvalSet(es.name, es.data.to(device), es.y_metric) for es in eval_sets]
+        eval_sets = [es.to(device) for es in eval_sets]
 
         run_model = maybe_compile(model, config.compile, device)
         groups = _build_param_groups(
@@ -443,8 +446,16 @@ class Trainer:
         if wants_batch_indices:
             model.current_batch_indices = None
         if stopper is not None and best_state is not None:
-            # strict=False: the snapshot deliberately omits static buffers.
-            model.load_state_dict(best_state, strict=False)
+            # strict=False tolerates exactly the static buffers the snapshot
+            # deliberately omits — anything else missing is a real bug.
+            static_keys = getattr(model, "static_state_keys", ())
+            incompatible = model.load_state_dict(best_state, strict=False)
+            stray = [k for k in incompatible.missing_keys if k not in static_keys]
+            if stray or incompatible.unexpected_keys:
+                raise RuntimeError(
+                    "best-epoch restore mismatch: "
+                    f"missing={stray} unexpected={list(incompatible.unexpected_keys)}"
+                )
             model.to(device)
             result.best_iteration = stopper.best_epoch
             result.best_score = float(stopper.best_value)

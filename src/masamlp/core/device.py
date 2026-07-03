@@ -64,6 +64,26 @@ def resolve_device_plan(
     return [torch.device("cuda", i % n_gpus) for i in range(n_members)]
 
 
+def module_device(module: torch.nn.Module) -> torch.device:
+    """The device a module is resident on (first parameter, falling back to
+    buffers for parameter-less models; cpu for stateless ones)."""
+    tensor = next(module.parameters(), None)
+    if tensor is None:
+        tensor = next(module.buffers(), None)
+    return tensor.device if tensor is not None else torch.device("cpu")
+
+
+def _cuda_amp_dtype(device: torch.device) -> torch.dtype:
+    # bf16 support is a property of the *target* device, which need not be
+    # the process's current device on multi-GPU boxes.
+    if device.index is None:
+        supported = torch.cuda.is_bf16_supported()
+    else:
+        with torch.cuda.device(device.index):
+            supported = torch.cuda.is_bf16_supported()
+    return torch.bfloat16 if supported else torch.float16
+
+
 def resolve_amp(
     amp: str | bool, device: torch.device, model: torch.nn.Module | None = None
 ) -> tuple[bool, torch.dtype | None]:
@@ -71,23 +91,27 @@ def resolve_amp(
 
     ``"auto"`` enables bf16 on CUDA (fp16 on GPUs without bf16) and disables
     AMP on CPU/MPS, where it rarely pays off for tabular-sized models. Models
-    may opt out of the auto policy with a class attribute ``amp_auto = False``
-    (retrieval models: KI-010 — autocast around cdist/topk is slower and
-    fp16 distances lose accuracy); an explicit ``amp=True`` still forces it.
+    may qualify the auto policy with a class attribute ``amp_auto``:
+    ``False`` opts out entirely (retrieval models: KI-010 — autocast around
+    cdist/topk is slower and fp16 distances lose accuracy); ``"bf16"``
+    accepts bf16 but not fp16 (ft_transformer: fp16 measured slower and less
+    accurate on T4). An explicit ``amp=True`` still forces AMP on.
     """
     if amp is False or amp == "off":
         return False, None
     if amp == "auto":
-        if model is not None and not getattr(model, "amp_auto", True):
+        policy = getattr(model, "amp_auto", True) if model is not None else True
+        if policy is False:
             return False, None
         if device.type != "cuda":
             return False, None
-        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        dtype = _cuda_amp_dtype(device)
+        if policy == "bf16" and dtype is not torch.bfloat16:
+            return False, None
         return True, dtype
     if amp is True or amp == "on":
         if device.type == "cuda":
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            return True, dtype
+            return True, _cuda_amp_dtype(device)
         if device.type == "cpu":
             return True, torch.bfloat16
         warnings.warn("AMP is not supported on MPS; training in float32", stacklevel=2)

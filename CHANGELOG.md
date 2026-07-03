@@ -22,12 +22,13 @@ multi-GPU ensemble training.
   streams over the corpus with a numerically stable running softmax and a
   cached encoded corpus, fixing the 8.4 GiB eval OOM at S6E7 scale
   (`candidate_chunk_size` constructor kwarg, default 8192).
-- **Per-model `amp="auto"` policy (KI-010).** Models can opt out of the
-  auto policy via `amp_auto = False`; the retrieval models do (autocast
-  made TabR ~2x slower on T4 and fp16 distances lose accuracy), and so does
-  `ft_transformer` (fp16 measured slower and less accurate on T4:
-  fit 19.4s -> 24.7s, rmse 0.296 -> 0.345 at 30k rows). Explicit
-  `amp=True` still forces AMP.
+- **Per-model `amp="auto"` policy (KI-010).** Models can qualify the auto
+  policy via a class attribute: `amp_auto = False` opts out entirely — the
+  retrieval models do (autocast made TabR ~2x slower on T4 and fp16
+  distances lose accuracy) — and `amp_auto = "bf16"` accepts bf16 but not
+  fp16, as `ft_transformer` does (fp16 measured slower and less accurate on
+  T4: fit 19.4s -> 24.7s, rmse 0.296 -> 0.345 at 30k rows; bf16 GPUs keep
+  AMP). Explicit `amp=True` still forces AMP.
 - **`eval_batch_size`** is now an estimator parameter (was a fixed 8192),
   used by both the per-epoch eval loop and `predict`.
 - Early-stopping snapshots no longer CPU-copy static retrieval corpus

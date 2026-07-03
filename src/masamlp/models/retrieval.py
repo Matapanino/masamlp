@@ -29,6 +29,9 @@ autograd semantics are untouched.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import torch
 from torch import Tensor, nn
 
@@ -45,10 +48,18 @@ class RetrievalBase(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.current_batch_indices: Tensor | None = None
-        self._eval_cache: Tensor | None = None
+        # Payload is subclass-defined (TabR: candidate keys; ModernNCA:
+        # (encoded corpus, label representation)).
+        self._eval_cache: Any = None
         self.register_load_state_dict_post_hook(
             lambda module, incompatible_keys: module.invalidate_eval_cache()
         )
+
+    def _chunk_bounds(self, n: int) -> Iterator[tuple[int, int]]:
+        """(start, stop) pairs covering ``range(n)`` in
+        ``candidate_chunk_size`` steps (subclasses set the attribute)."""
+        for start in range(0, n, self.candidate_chunk_size):
+            yield start, min(start + self.candidate_chunk_size, n)
 
     # ------------------------------------------------------------------ #
     # Candidates (the training set)

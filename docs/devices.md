@@ -19,11 +19,12 @@ contain device logic.
 
 - `amp="auto"` enables bf16 autocast (fp16 + GradScaler on GPUs without
   bf16). Disable with `amp=False`. **The auto policy is per-model**: a model
-  class may set `amp_auto = False` to opt out — the retrieval models
-  (`tabr`/`modernnca`) do, because autocast around their cdist/topk search
-  is slower (KI-010) and fp16 distances lose accuracy; `ft_transformer`
-  does too (fp16 measured slower and less accurate on T4). An explicit
-  `amp=True` still forces AMP on.
+  class may set `amp_auto = False` to opt out entirely — the retrieval
+  models (`tabr`/`modernnca`) do, because autocast around their cdist/topk
+  search is slower (KI-010) and fp16 distances lose accuracy — or
+  `amp_auto = "bf16"` to accept bf16 but not fp16, as `ft_transformer` does
+  (fp16 measured slower and less accurate on T4). An explicit `amp=True`
+  still forces AMP on.
 - `compile=True` applies `torch.compile`, falling back to eager with a
   warning if the backend fails (lazily, at the first step).
 - Shuffling permutations are drawn on CPU from the seeded generator, so a

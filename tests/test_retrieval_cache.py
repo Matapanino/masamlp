@@ -117,7 +117,8 @@ def test_eval_cache_hit(name, monkeypatch):
     if name == "tabr":
         assert len(calls) == 1  # second batch reused the cached keys
     else:
-        assert model._eval_cache.shape[0] == _N
+        cand_z, y_repr = model._eval_cache
+        assert cand_z.shape[0] == _N and y_repr.shape == (_N, 3)
 
 
 def _prime_cache(model):
@@ -202,6 +203,17 @@ def test_early_stopping_snapshot_excludes_candidates(monkeypatch, reg_data):
     assert m.best_iteration_ == int(np.argmin(history))
     rmse_now = float(np.sqrt(np.mean((m.predict(X_val) - y_val) ** 2)))
     assert rmse_now == pytest.approx(m.best_score_, abs=1e-5)
+
+
+def test_eval_cache_survives_repeated_predict(clf_data):
+    X, y, X_test, _ = clf_data
+    m = MasaClassifier(n_epochs=3, **_TABR_KW).fit(X, y)
+    m.predict_proba(X_test)
+    cache = m.model_._eval_cache
+    assert cache is not None
+    m.predict_proba(X_test)
+    # The no-op device move in predict must not invalidate the cache.
+    assert m.model_._eval_cache is cache
 
 
 def test_tabr_ema_predicts_consistently(clf_data):

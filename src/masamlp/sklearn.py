@@ -17,7 +17,7 @@ import torch
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 
-from masamlp.core.device import resolve_device, resolve_device_plan
+from masamlp.core.device import module_device, resolve_device, resolve_device_plan
 from masamlp.core.metrics import BaseMetric, get_metric, make_metric
 from masamlp.core.objectives import BaseObjective, apply_transform, make_objective
 from masamlp.core.trainer import (
@@ -403,33 +403,46 @@ class BaseMasaModel(BaseEstimator):
         x_num, x_cat = self.preprocessor_.transform(X)
         transform = self.transform_name_
         members = getattr(self, "models_", None) or [self.model_]
-        member_devices = {next(m.parameters()).device for m in members}
-        if len({d for d in member_devices if d.type == "cuda"}) > 1:
+        data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat))
+        member_cuda = {d for m in members if (d := module_device(m)).type == "cuda"}
+        if (
+            isinstance(self.device, str)
+            and self.device in ("auto", "cuda")
+            and len(member_cuda) > 1
+        ):
             # Members are still sharded from a multi-GPU fit: predict on
             # their resident devices instead of dragging them onto one.
+            # (An explicit device, e.g. "cpu", takes the branch below.)
             from masamlp.core.parallel import predict_members_grouped
 
-            data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat))
             preds = predict_members_grouped(
                 members,
                 data,
                 lambda raw: apply_transform(raw, transform),
                 self.eval_batch_size,
             )
-            return preds[0] if len(preds) == 1 else np.mean(preds, axis=0)
-        device = resolve_device(self.device)
-        data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat)).to(device)
-        preds = []
-        for model in members:
-            model.to(device)
-            preds.append(
-                predict_transformed(
-                    model,
-                    data,
-                    lambda raw: apply_transform(raw, transform),
-                    self.eval_batch_size,
+        else:
+            device = resolve_device(self.device)
+            if device.index is None and device.type == "cuda":
+                device = torch.device("cuda", torch.cuda.current_device())
+            elif device.index is None and device.type == "mps":
+                device = torch.device("mps", 0)
+            data = data.to(device)
+            preds = []
+            for model in members:
+                if module_device(model) != device:
+                    # Skipping the no-op move keeps the retrieval models'
+                    # eval cache alive across predict calls (.to() always
+                    # runs _apply, which invalidates it).
+                    model.to(device)
+                preds.append(
+                    predict_transformed(
+                        model,
+                        data,
+                        lambda raw: apply_transform(raw, transform),
+                        self.eval_batch_size,
+                    )
                 )
-            )
         # Ensemble average on the transformed scale (probabilities for
         # classification), matching pytabkit's RealMLP ensembling.
         return preds[0] if len(preds) == 1 else np.mean(preds, axis=0)

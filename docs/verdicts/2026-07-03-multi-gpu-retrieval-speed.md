@@ -20,7 +20,7 @@ Baseline comparison (same workloads as 2026-07-02):
 | tabr 30k fit, amp=auto | 21.3s | **12.3s** | KI-010 resolved: auto no longer doubles fit |
 | modernnca smoke fit | 0.5s | 0.5s | training path untouched |
 | ft_transformer 30k, amp=off | 19.3s | 19.4s | unchanged |
-| ft_transformer 30k, amp=auto | 23.7s | 24.7s → policy | fp16 slower AND rmse 0.296→0.345 ⇒ `FTTransformer.amp_auto = False` |
+| ft_transformer 30k, amp=auto | 23.7s | 24.7s → policy | fp16 slower AND rmse 0.296→0.345 ⇒ `FTTransformer.amp_auto = "bf16"` (fp16 off, bf16 kept) |
 | tab_transformer 30k, amp=auto | — | 12.3s (off: 15.1s) | AMP helps tabtr ⇒ keeps default policy |
 | lnn n_ens=8 loop → vectorized | 28.2s → 7.1s | 30.4s → 7.0s | unchanged |
 
@@ -73,6 +73,7 @@ prediction differences.
 - KI-008 inference side: **resolved** (cache + chunked scoring; training
   remains O(N) by design, bounded by `candidate_budget`).
 - KI-010: **resolved** via the per-model AMP policy (`amp_auto = False` on
-  tabr/modernnca/ft_transformer; measured on T4 above).
+  tabr/modernnca, `amp_auto = "bf16"` on ft_transformer; measured on T4
+  above).
 - No regressions in the unchanged paths (resnet/realmlp/danet/lnn within
   noise of the 2026-07-02 baseline).

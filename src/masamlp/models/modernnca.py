@@ -111,43 +111,41 @@ class ModernNCA(RetrievalBase):
         y_repr = y.to(dtype)
         return y_repr[:, None] if y_repr.ndim == 1 else y_repr
 
-    def _encoded_candidates(self) -> Tensor:
-        """Whole-corpus encodings, chunked (eval BatchNorm uses running stats,
-        so chunked encoding is exact) and cached across query batches."""
+    def _encoded_candidates(self) -> tuple[Tensor, Tensor]:
+        """(whole-corpus encodings, label representation), both chunked (eval
+        BatchNorm uses running stats, so chunked encoding is exact) and cached
+        across query batches. Built under no_grad — the cache gate only admits
+        no-autograd contexts, and the cache must never carry a graph."""
         if self._eval_cache is None:
-            n = self.cand_y.shape[0]
-            self._eval_cache = torch.cat(
-                [
-                    self._encode(
-                        self.cand_x_num[start : start + self.candidate_chunk_size],
-                        self.cand_x_cat[start : start + self.candidate_chunk_size],
-                    )
-                    for start in range(0, n, self.candidate_chunk_size)
-                ]
-            )
+            with torch.no_grad():
+                dtype = self.encoder.weight.dtype
+                self._eval_cache = (
+                    torch.cat(
+                        [
+                            self._encode(
+                                self.cand_x_num[start:stop], self.cand_x_cat[start:stop]
+                            )
+                            for start, stop in self._chunk_bounds(self.cand_y.shape[0])
+                        ]
+                    ),
+                    self._label_repr(self.cand_y, dtype),
+                )
         return self._eval_cache
 
     def _aggregate_streamed(self, z: Tensor) -> Tensor:
         """softmax(-cdist/T) @ y_repr over the whole corpus, streamed in
         ``candidate_chunk_size`` blocks with a running max so peak memory is
         B x chunk instead of the B x N matrix that OOMs at scale."""
-        cand_z = self._encoded_candidates()
-        n = cand_z.shape[0]
-        if self.n_label_classes is not None:
-            k = self.n_label_classes
-        else:
-            k = 1 if self.cand_y.ndim == 1 else self.cand_y.shape[1]
+        cand_z, y_repr = self._encoded_candidates()
         running_max = torch.full((z.shape[0],), -torch.inf, device=z.device, dtype=z.dtype)
-        num = torch.zeros(z.shape[0], k, device=z.device, dtype=z.dtype)
+        num = torch.zeros(z.shape[0], y_repr.shape[1], device=z.device, dtype=z.dtype)
         den = torch.zeros(z.shape[0], device=z.device, dtype=z.dtype)
-        for start in range(0, n, self.candidate_chunk_size):
-            stop = min(start + self.candidate_chunk_size, n)
+        for start, stop in self._chunk_bounds(cand_z.shape[0]):
             scores = -torch.cdist(z, cand_z[start:stop], p=2) / self.temperature
-            y_repr = self._label_repr(self.cand_y[start:stop], z.dtype)
             new_max = torch.maximum(running_max, scores.max(dim=1).values)
             weights = torch.exp(scores - new_max[:, None])
             rescale = torch.exp(running_max - new_max)  # 0 on the first chunk
-            num = num * rescale[:, None] + weights @ y_repr
+            num = num * rescale[:, None] + weights @ y_repr[start:stop]
             den = den * rescale + weights.sum(dim=1)
             running_max = new_max
         return num / den[:, None]
