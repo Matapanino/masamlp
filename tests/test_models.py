@@ -112,6 +112,17 @@ def test_register_model_contract():
         build_model("missing", None, 3, [], 1, None)
 
 
+def test_unknown_model_params_list_valid_keys():
+    with pytest.raises(ValueError, match=r"'n_block'.*'resnet'.*'n_blocks'") as excinfo:
+        build_model("resnet", {"n_block": 5}, 3, [], 1, None)
+    message = str(excinfo.value)
+    assert "cat_emb_dim" in message  # shared embedding keys are listed too
+    assert "docs/parameters.md" in message
+    # Embedding keys are valid for every model and must not trip the check.
+    model = build_model("resnet", {"n_blocks": 1, "d": 16, "cat_emb_dim": 4}, 3, [2], 1, None)
+    assert model(torch.randn(4, 3), torch.zeros(4, 1, dtype=torch.int64)).shape == (4, 1)
+
+
 def test_model_without_output_layer_is_allowed():
     # output_layer is optional (ModernNCA has none); bias init is skipped.
     class NoHead(torch.nn.Module):

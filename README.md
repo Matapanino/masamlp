@@ -65,6 +65,37 @@ builds on.
 Third-party architectures plug in with `register_model` and get the whole
 estimator surface (weights, objectives, metrics, early stopping) for free.
 
+Every architecture is fully configurable through `model_params` — depth,
+width, dropout, and the model-specific knobs (e.g. TabR's `context_size`).
+The complete list per model, with defaults and sizing notes, is in
+[docs/parameters.md](docs/parameters.md):
+
+```python
+clf = MasaClassifier(model="ft_transformer",
+                     model_params={"n_blocks": 4, "d_block": 256})
+```
+
+## Key parameters
+
+Constructor parameters shared by both estimators (the full reference,
+including everything below plus preprocessing, ensembling, and hardware
+options, is [docs/parameters.md](docs/parameters.md)):
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `model` | `"resnet"` | Architecture (see Models above). |
+| `model_params` | `None` | Architecture knobs, e.g. `{"n_blocks": 5, "d": 384}` — per-model tables in [docs/parameters.md](docs/parameters.md). |
+| `objective` | `None` | Training loss: task default, a built-in name (`"huber"`, `"quantile"`, ...), or a custom per-sample torch loss. |
+| `eval_metric` | `None` | Metric(s) on `eval_set`: built-in name, `make_metric(...)`, or a NumPy callable; the first one drives early stopping. |
+| `early_stopping_rounds` | `None` | Patience in epochs; restores the best epoch's weights. |
+| `n_epochs` | `256` | Maximum epochs. |
+| `batch_size` | `"auto"` | Full-batch ≤ 4096 rows, else minibatches of 1024. |
+| `learning_rate` | `1e-3` | Optimizer learning rate. |
+| `n_ens` | `1` | Seed-ensemble members (averaged predictions; multi-GPU aware). |
+| `class_weight` | `None` | (classifier) `"balanced"` or a `{label: weight}` dict. |
+| `device` | `"auto"` | cuda > mps > cpu. |
+| `random_state` | `42` | Seed; same seed ⇒ same model. |
+
 ### RealMLP insights are composable options
 
 The tricks from the RealMLP paper are estimator-level options usable with
