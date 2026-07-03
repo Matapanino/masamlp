@@ -30,7 +30,11 @@ def test_tabr_roundtrip_keeps_candidates(tmp_path, clf_data):
     m.save_model(tmp_path / "model")
     loaded = MasaClassifier.load_model(tmp_path / "model")
     assert loaded.model_.has_candidates
-    np.testing.assert_array_equal(m.predict_proba(X_test), loaded.predict_proba(X_test))
+    # 1-ulp tolerance: the loaded corpus buffers live at a different memory
+    # alignment, which can flip the last bit of BLAS results (platform-dependent).
+    np.testing.assert_allclose(
+        m.predict_proba(X_test), loaded.predict_proba(X_test), rtol=0, atol=1e-6
+    )
 
 
 def test_tabr_multioutput_regression_rejected():
