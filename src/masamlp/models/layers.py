@@ -144,8 +144,16 @@ def entmax15(x: Tensor, dim: int = -1) -> Tensor:
     mean = x_sorted.cumsum(dim) / k
     mean_sq = (x_sorted**2).cumsum(dim) / k
     ss = k * (mean_sq - mean**2)
+    # ``delta`` clamps to 0 at the support boundary; ``sqrt`` there has an
+    # infinite gradient (and ``inf * 0 = nan`` against the clamp), which would
+    # poison any upstream parameter fed to entmax (e.g. DANet's raw
+    # ``mask_weight``) and produce a non-finite training trajectory. A tiny
+    # floor keeps the backward finite with a negligible forward change.
     delta = torch.clamp((1.0 - ss) / k, min=0.0)
-    tau = mean - torch.sqrt(delta)
-    k_star = (tau <= x_sorted).sum(dim=dim, keepdim=True)
+    tau = mean - torch.sqrt(delta.clamp_min(1e-12))
+    # For finite inputs ``k_star >= 1`` is guaranteed; clamp so that a
+    # non-finite input degrades to a NaN output (caught by the trainer's
+    # non-finite-loss check) instead of a hard ``gather(-1)`` crash.
+    k_star = (tau <= x_sorted).sum(dim=dim, keepdim=True).clamp_(min=1)
     tau_star = tau.gather(dim, k_star - 1)
     return torch.clamp(x - tau_star, min=0.0) ** 2

@@ -40,6 +40,10 @@ class TrainerConfig:
     # carry a "wd_factor" (e.g. 0.0 for biases).
     weight_decay_schedule: str = "none"
     grad_clip: float | None = None
+    # Exponential moving average of the model parameters (Polyak averaging).
+    # When set (typically ~0.99-0.999), eval / early stopping / the final
+    # weights use the EMA copy instead of the last optimizer step.
+    ema_decay: float | None = None
     device: str = "auto"
     amp: str | bool = "auto"
     compile: bool = False
@@ -172,6 +176,26 @@ def flat_cos(t: float) -> float:
     return float(0.5 * (1.0 + np.cos(np.pi * (t - 0.5) / 0.5)))
 
 
+def _update_ema(model: nn.Module, ema_params: dict[str, Tensor], decay: float) -> None:
+    """In-place EMA update of the shadow parameters after an optimizer step."""
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            ema_params[name].mul_(decay).add_(param.detach(), alpha=1.0 - decay)
+
+
+def _swap_in_params(model: nn.Module, new_params: dict[str, Tensor]) -> dict[str, Tensor]:
+    """Copy ``new_params`` into the model, returning the replaced values so the
+    caller can restore them (used to evaluate on EMA weights without disturbing
+    the live training parameters). Buffers (BN running stats, retrieval
+    candidate corpus) are left untouched."""
+    saved: dict[str, Tensor] = {}
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            saved[name] = param.detach().clone()
+            param.copy_(new_params[name])
+    return saved
+
+
 def _resolve_batch_size(config: TrainerConfig, n_rows: int) -> int:
     bs = config.batch_size
     if bs is None:
@@ -258,6 +282,15 @@ class Trainer:
         )
         best_state: dict[str, Tensor] | None = None
 
+        ema_decay = config.ema_decay
+        ema_params: dict[str, Tensor] | None = None
+        if ema_decay is not None:
+            if not 0.0 < ema_decay < 1.0:
+                raise ValueError(f"ema_decay must be in (0, 1), got {ema_decay!r}")
+            ema_params = {
+                name: p.detach().clone() for name, p in model.named_parameters()
+            }
+
         def train_step(step_model: nn.Module, batch: TabularData) -> Tensor:
             with torch.autocast(device.type, dtype=amp_dtype, enabled=amp_enabled):
                 raw = step_model(batch.x_num, batch.x_cat)
@@ -326,6 +359,8 @@ class Trainer:
                 else:
                     loss = train_step(run_model, batch)
                 first_step = False
+                if ema_params is not None:
+                    _update_ema(model, ema_params, ema_decay)
                 epoch_loss += loss * (len(batch) / n)
             # One host sync per epoch keeps the GPU pipeline full.
             epoch_loss_val = float(epoch_loss)
@@ -336,6 +371,12 @@ class Trainer:
                 )
             if scheduler is not None:
                 scheduler.step()
+
+            # Evaluate (and pick the best checkpoint) on the EMA parameters
+            # when enabled, then restore the live weights for the next epoch.
+            saved_params = (
+                _swap_in_params(model, ema_params) if ema_params is not None else None
+            )
 
             for es in eval_sets:
                 pred = predict_transformed(
@@ -360,14 +401,19 @@ class Trainer:
                         )
                 print("  ".join(parts))
 
+            should_stop = False
             if stopper is not None:
                 monitor = result.evals_result[eval_sets[0].name][metrics[0].name][-1]
                 if stopper.update(monitor, epoch):
                     best_state = {
                         k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()
                     }
-                if stopper.should_stop:
-                    break
+                should_stop = stopper.should_stop
+
+            if saved_params is not None:
+                _swap_in_params(model, saved_params)
+            if should_stop:
+                break
 
         if wants_batch_indices:
             model.current_batch_indices = None
@@ -376,4 +422,7 @@ class Trainer:
             model.to(device)
             result.best_iteration = stopper.best_epoch
             result.best_score = float(stopper.best_value)
+        elif ema_params is not None:
+            # No early stopping: the final weights are the EMA parameters.
+            _swap_in_params(model, ema_params)
         return result

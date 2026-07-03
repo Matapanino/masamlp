@@ -32,8 +32,22 @@
 - **KI-008 — TabR re-encodes all candidates every training step.** The
   retrieval search runs over the whole training set per batch (the original
   design); fine for the small/medium datasets this library targets, O(N)
-  per step otherwise. Candidate subsampling and inference-time key caching
-  are on the roadmap.
+  per step otherwise. Bound the corpus with ``candidate_budget`` (0.2.0, a
+  seeded stratified subsample of `tabr`/`modernnca` candidates); inference-time
+  key caching is still on the roadmap.
 - **KI-006 — custom objective/metric objects are not serialized.**
   `save_model` warns and stores everything needed for prediction; refitting
   a loaded estimator requires re-setting the custom objects.
+- **KI-011 — DANet non-finite trajectory / entmax crash (RESOLVED 0.2.0).**
+  At real-data scale `danet` could diverge and crash inside `entmax15`
+  (`index -1 is out of bounds` on CPU / CUDA device-side assert). The genesis
+  was entmax's `sqrt` at the support boundary (infinite gradient) poisoning
+  DANet's raw `mask_weight` to NaN. Fixed with a gradient-bounded `sqrt` plus a
+  `k_star >= 1` clamp so any residual non-finite input degrades to a clean
+  non-finite-loss error instead of a hard crash.
+- **KI-012 — early stopping on a discrete task metric is noisy.** On
+  imbalanced tasks, stopping on `balanced_accuracy` (or accuracy) was
+  measurably worse than stopping on a probability-quality metric. Prefer
+  `eval_metric="logloss"`/`"multi_logloss"` for the stop signal and convert to
+  your task metric post-hoc; a discrete metric is a jumpy early-stopping
+  signal.

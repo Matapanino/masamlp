@@ -43,16 +43,18 @@ from masamlp.data.dataset import TabularData
 from masamlp.utils.random import seed_everything
 
 
-def check_vectorizable(model: nn.Module) -> None:
+def check_vectorizable(model: nn.Module, model_name: str | None = None) -> None:
+    where = f" {model_name!r}" if model_name else ""
     if getattr(model, "wants_batch_indices", False) or hasattr(model, "set_candidates"):
         raise ValueError(
-            "retrieval models cannot train vectorized; use ens_mode='loop'"
+            f"retrieval models{where} cannot train vectorized; use ens_mode='loop'"
         )
     for module in model.modules():
         if isinstance(module, _BatchNorm):
             raise ValueError(
-                "models with BatchNorm running statistics cannot train "
-                "vectorized; use ens_mode='loop'"
+                f"model{where} has BatchNorm running statistics and cannot train "
+                "vectorized; use ens_mode='loop' (BatchNorm-free models such as "
+                "grn/realmlp/ft_transformer/gandalf/lnn support ens_mode='vectorized')"
             )
 
 

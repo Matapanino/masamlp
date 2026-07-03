@@ -11,7 +11,7 @@ metric**. The sibling library of
 [repleafgbm](https://github.com/Matapanino/repleafgbm) (same author, same API
 philosophy), for the neural side of tabular ML.
 
-> **Status: alpha (0.1.x).** Built with heavy use of
+> **Status: alpha (0.2.x).** Built with heavy use of
 > [Claude Code](https://claude.com/claude-code) (coding and architecture
 > design).
 
@@ -85,6 +85,12 @@ The tricks from the RealMLP paper are estimator-level options usable with
   (`torch.func`) for BatchNorm-free models — pytabkit's speed trick
 - `weight_decay_schedule="flat_cos"` — RealMLP-TD's scheduled weight decay
   (param groups can opt out, e.g. biases)
+- `ema_decay=0.999` — exponential moving average (Polyak averaging) of the
+  weights; evaluation, early stopping, and the final model all use the
+  averaged parameters
+- `candidate_budget=N` — bound the retrieval corpus of `tabr`/`modernnca`
+  with a seeded, class-stratified subsample (keeps memory/compute in check on
+  large data; no-op for other models)
 - `masamlp.realmlp_td_params(task)` — the **full RealMLP-TD recipe**:
   parametric activations, flat_cos-scheduled dropout and weight decay, PBLD
   embeddings with their own lr factor, and hybrid categorical encoding
