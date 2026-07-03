@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+Speed release: retrieval-model inference cost, per-model AMP policy, and
+multi-GPU ensemble training.
+
+- **Multi-GPU ensemble-member sharding.** With `device="auto"` (or the
+  index-less `"cuda"`), more than one CUDA device, and `n_ens > 1`, ensemble
+  members are distributed round-robin across all GPUs and trained
+  concurrently (one worker thread per device). Prediction after a sharded
+  fit runs on the members' resident devices. Opt out with an explicit
+  device (`device="cuda:0"`). Loop-mode only; `ens_mode="vectorized"`
+  stays single-device. Reproducible for a fixed GPU topology
+  (`docs/devices.md`).
+- **TabR inference-time key caching + chunked retrieval (KI-008).** In eval
+  mode candidate keys are computed once per predict pass and reused across
+  query batches, and the top-k search is streamed over
+  `candidate_chunk_size` blocks — peak memory B x chunk instead of the
+  B x N distance matrix (~11 GB at 345k rows before).
+- **ModernNCA chunked eval scoring.** The soft-nearest-neighbor aggregation
+  streams over the corpus with a numerically stable running softmax and a
+  cached encoded corpus, fixing the 8.4 GiB eval OOM at S6E7 scale
+  (`candidate_chunk_size` constructor kwarg, default 8192).
+- **Per-model `amp="auto"` policy (KI-010).** Models can qualify the auto
+  policy via a class attribute: `amp_auto = False` opts out entirely — the
+  retrieval models do (autocast made TabR ~2x slower on T4 and fp16
+  distances lose accuracy) — and `amp_auto = "bf16"` accepts bf16 but not
+  fp16, as `ft_transformer` does (fp16 measured slower and less accurate on
+  T4: fit 19.4s -> 24.7s, rmse 0.296 -> 0.345 at 30k rows; bf16 GPUs keep
+  AMP). Explicit `amp=True` still forces AMP.
+- **`eval_batch_size`** is now an estimator parameter (was a fixed 8192),
+  used by both the per-epoch eval loop and `predict`.
+- Early-stopping snapshots no longer CPU-copy static retrieval corpus
+  buffers on every improvement (hundreds of MB at scale).
+
 ## 0.2.0 (2026-07-03)
 
 Field-report follow-up from running the 0.1.0 model zoo in production on a

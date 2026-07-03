@@ -72,6 +72,10 @@ class FTTransformer(nn.Module):
     """Defaults are the reference's ``get_default_kwargs(n_blocks=3)``."""
 
     embedding_kind = "tokens"
+    # amp="auto" accepts bf16 but not fp16: fp16 autocast measured slower AND
+    # less accurate on T4 (2026-07-03 verdict: fit 19.4s->24.7s, rmse
+    # 0.296->0.345 at 30k rows); bf16 GPUs keep AMP. amp=True still forces it.
+    amp_auto = "bf16"
 
     def __init__(
         self,

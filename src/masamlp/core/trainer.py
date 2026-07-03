@@ -44,11 +44,16 @@ class TrainerConfig:
     # When set (typically ~0.99-0.999), eval / early stopping / the final
     # weights use the EMA copy instead of the last optimizer step.
     ema_decay: float | None = None
-    device: str = "auto"
+    device: str | torch.device = "auto"
     amp: str | bool = "auto"
     compile: bool = False
     early_stopping_rounds: int | None = None
     random_state: int | None = None
+    # "global" seeds python/NumPy/torch process-wide (the default, and the
+    # only mode that may run on the main thread). "device" seeds only this
+    # fit's CUDA generator — required inside ensemble-sharding worker
+    # threads, where touching process-global RNG state would race.
+    seed_scope: str = "global"
     verbose: int = 0
     n_threads: int | None = None
     eval_batch_size: int = 8192
@@ -65,6 +70,9 @@ class EvalSet:
     name: str
     data: TabularData
     y_metric: np.ndarray
+
+    def to(self, device: torch.device) -> EvalSet:
+        return EvalSet(self.name, self.data.to(device), self.y_metric)
 
 
 @dataclass
@@ -193,6 +201,10 @@ def _swap_in_params(model: nn.Module, new_params: dict[str, Tensor]) -> dict[str
         for name, param in model.named_parameters():
             saved[name] = param.detach().clone()
             param.copy_(new_params[name])
+    if hasattr(model, "invalidate_eval_cache"):
+        # Retrieval models cache eval-time corpus encodings; an in-place
+        # parameter swap changes them without any mode transition.
+        model.invalidate_eval_cache()
     return saved
 
 
@@ -218,8 +230,18 @@ class Trainer:
         config: TrainerConfig,
         inverse_target: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> TrainResult:
-        seed_everything(config.random_state)
         device = resolve_device(config.device)
+        if config.seed_scope == "global":
+            seed_everything(config.random_state)
+        elif config.seed_scope == "device":
+            if config.random_state is not None and device.type == "cuda":
+                torch.cuda.init()
+                index = device.index if device.index is not None else torch.cuda.current_device()
+                torch.cuda.default_generators[index].manual_seed(config.random_state)
+        else:
+            raise ValueError(
+                f"Unknown seed_scope {config.seed_scope!r}. Expected 'global' or 'device'"
+            )
         if device.type == "cpu":
             set_threads(config.n_threads)
 
@@ -228,7 +250,7 @@ class Trainer:
         for module in extra_modules:
             module.to(device)
         train = train.to(device)
-        eval_sets = [EvalSet(es.name, es.data.to(device), es.y_metric) for es in eval_sets]
+        eval_sets = [es.to(device) for es in eval_sets]
 
         run_model = maybe_compile(model, config.compile, device)
         groups = _build_param_groups(
@@ -256,7 +278,7 @@ class Trainer:
         wd_scheduled = config.weight_decay_schedule == "flat_cos"
         model_has_schedule = hasattr(model, "set_schedule_t")
 
-        amp_enabled, amp_dtype = resolve_amp(config.amp, device)
+        amp_enabled, amp_dtype = resolve_amp(config.amp, device, model)
         # GradScaler only exists for cuda/cpu; fp16 (pre-bf16 GPUs) needs it.
         scaler = torch.amp.GradScaler(
             "cuda" if device.type == "cuda" else "cpu",
@@ -405,8 +427,14 @@ class Trainer:
             if stopper is not None:
                 monitor = result.evals_result[eval_sets[0].name][metrics[0].name][-1]
                 if stopper.update(monitor, epoch):
+                    # Static buffers (retrieval corpora, possibly hundreds of
+                    # MB) never change during fit — keep them out of the
+                    # per-improvement CPU snapshot.
+                    static_keys = getattr(model, "static_state_keys", ())
                     best_state = {
-                        k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()
+                        k: v.detach().to("cpu", copy=True)
+                        for k, v in model.state_dict().items()
+                        if k not in static_keys
                     }
                 should_stop = stopper.should_stop
 
@@ -418,7 +446,16 @@ class Trainer:
         if wants_batch_indices:
             model.current_batch_indices = None
         if stopper is not None and best_state is not None:
-            model.load_state_dict(best_state)
+            # strict=False tolerates exactly the static buffers the snapshot
+            # deliberately omits — anything else missing is a real bug.
+            static_keys = getattr(model, "static_state_keys", ())
+            incompatible = model.load_state_dict(best_state, strict=False)
+            stray = [k for k in incompatible.missing_keys if k not in static_keys]
+            if stray or incompatible.unexpected_keys:
+                raise RuntimeError(
+                    "best-epoch restore mismatch: "
+                    f"missing={stray} unexpected={list(incompatible.unexpected_keys)}"
+                )
             model.to(device)
             result.best_iteration = stopper.best_epoch
             result.best_score = float(stopper.best_value)

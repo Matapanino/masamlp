@@ -21,7 +21,7 @@ from masamlp.models import register_model
 from masamlp.presets import realmlp_params, realmlp_td_params
 from masamlp.regressor import MasaRegressor
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "MasaRegressor",

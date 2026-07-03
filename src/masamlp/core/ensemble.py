@@ -89,7 +89,7 @@ def fit_vectorized(
     device = resolve_device(config.device)
     if device.type == "cpu":
         set_threads(config.n_threads)
-    if resolve_amp(config.amp, device)[0]:
+    if resolve_amp(config.amp, device, models[0])[0]:
         warnings.warn(
             "AMP is disabled for vectorized ensembles; training in float32", stacklevel=2
         )
@@ -99,7 +99,7 @@ def fit_vectorized(
     for model in models:
         model.to(device)
     train = train.to(device)
-    eval_sets = [EvalSet(es.name, es.data.to(device), es.y_metric) for es in eval_sets]
+    eval_sets = [es.to(device) for es in eval_sets]
 
     stacked_params, stacked_buffers = stack_module_state(models)
     params = {n: p.detach().clone().requires_grad_(True) for n, p in stacked_params.items()}

@@ -1,0 +1,51 @@
+# masaMLP GPU verification — torch 2.11.0+cu128, cuda=True
+
+## pytest (device / ensemble / realmlp / retrieval_cache / parallel)
+
+```
+.......s......................................................s          [100%]
+
+```
+
+## CUDA smoke — torch 2.11.0+cu128, Tesla T4
+
+| model | cuda acc | fit s |
+|---|---|---|
+| resnet | 0.997 | 1.9 |
+| realmlp | 0.975 | 0.3 |
+| ft_transformer | 0.980 | 3.2 |
+| tab_transformer | 0.831 | 0.2 |
+| danet | 0.959 | 3.5 |
+| tabr | 0.997 | 1.7 |
+| modernnca | 0.983 | 0.5 |
+| gandalf | 0.912 | 0.8 |
+| grn | 0.995 | 0.3 |
+| lnn | 0.995 | 0.8 |
+
+AMP auto (resnet reg): rmse=0.1845
+save(cuda) -> load -> predict parity: True
+
+## gpu_speed.py --rows 30000 --skip-cpu
+
+```
+torch 2.11.0+cu128  cuda=True (Tesla T4 x1)
+resnet                       device=cuda    amp=False fit     5.3s  predict(200000)   0.93s  rmse 0.2151
+resnet                       device=cuda    amp=auto  fit     5.0s  predict(200000)   0.93s  rmse 0.2337
+realmlp (TD-S recipe)        device=cuda    amp=False fit    10.7s  predict(200000)   0.22s  rmse 0.2223
+realmlp (TD-S recipe)        device=cuda    amp=auto  fit    12.3s  predict(200000)   0.21s  rmse 0.2262
+ft_transformer               device=cuda    amp=False fit    19.4s  predict(200000)   2.87s  rmse 0.2961
+ft_transformer               device=cuda    amp=auto  fit    24.7s  predict(200000)   3.18s  rmse 0.3447
+tabr                         device=cuda    amp=False fit    11.8s  predict(200000)   3.59s  rmse 0.2158
+tabr                         device=cuda    amp=auto  fit    12.3s  predict(200000)   3.77s  rmse 0.2158
+tab_transformer              device=cuda    amp=False fit    15.1s  predict(200000)   3.28s  rmse 0.7597
+tab_transformer              device=cuda    amp=auto  fit    12.3s  predict(200000)   2.78s  rmse 0.7814
+modernnca                    device=cuda    amp=False fit     5.5s  predict(200000)   2.57s  rmse 0.7788
+modernnca                    device=cuda    amp=auto  fit     5.4s  predict(200000)   2.33s  rmse 0.7788
+
+-- n_ens=8 (lnn): loop vs vectorized --
+lnn n_ens=8 [loop]           device=cuda    amp=False fit    30.4s  predict(200000)   1.34s  rmse 0.1744
+lnn n_ens=8 [vectorized]     device=cuda    amp=False fit     7.0s  predict(200000)   1.51s  rmse 0.1745
+
+```
+
+pytest exit code: 0

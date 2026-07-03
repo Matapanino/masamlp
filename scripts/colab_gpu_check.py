@@ -69,10 +69,11 @@ def setup() -> None:
 def run_pytest() -> int:
     rc, out = sh_stream(
         [sys.executable, "-m", "pytest", "tests/test_device.py", "tests/test_ensemble.py",
-         "tests/test_realmlp.py", "-q"],
+         "tests/test_realmlp.py", "tests/test_retrieval_cache.py", "tests/test_parallel.py",
+         "-q"],
         cwd=WORK,
     )
-    log("## pytest (device / ensemble / realmlp)\n")
+    log("## pytest (device / ensemble / realmlp / retrieval_cache / parallel)\n")
     log("```\n" + out[-4000:] + "\n```\n")
     return rc
 

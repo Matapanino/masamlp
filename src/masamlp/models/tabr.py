@@ -13,8 +13,11 @@ Implementation notes vs the original:
 - Retrieval always uses the original repo's ``memory_efficient`` strategy:
   candidate keys are computed without gradients for the search, and only the
   selected context rows are re-encoded with gradients.
-- Search is a plain ``torch.cdist`` + ``topk`` (no faiss dependency) —
-  appropriate for the small/medium datasets this library targets.
+- Search is a plain ``torch.cdist`` + ``topk`` (no faiss dependency),
+  streamed over ``candidate_chunk_size`` blocks so peak memory is
+  B x chunk instead of B x N.
+- In eval mode the candidate keys are cached across query batches
+  (see models/retrieval.py for the invalidation rules).
 - During training the trainer exposes the batch's candidate indices
   (``wants_batch_indices``) so each row can exclude itself from its context.
 """
@@ -27,6 +30,7 @@ import torch
 from torch import Tensor, nn
 
 from masamlp.models.base import FeatureEmbedding
+from masamlp.models.retrieval import RetrievalBase
 
 
 def _block(
@@ -43,9 +47,7 @@ def _block(
     return nn.Sequential(*layers)
 
 
-class TabR(nn.Module):
-    wants_batch_indices = True
-
+class TabR(RetrievalBase):
     def __init__(
         self,
         embedding: FeatureEmbedding,
@@ -67,7 +69,6 @@ class TabR(nn.Module):
         self.embedding = embedding
         self.context_size = context_size
         self.candidate_chunk_size = candidate_chunk_size
-        self.current_batch_indices: Tensor | None = None
         d_block = int(d_main * d_multiplier)
 
         # >>> encoder
@@ -106,22 +107,6 @@ class TabR(nn.Module):
         self.output_layer = nn.Linear(d_main, out_dim)
 
     # ------------------------------------------------------------------ #
-    # Candidates (the training set)
-    # ------------------------------------------------------------------ #
-    def set_candidates(self, x_num: Tensor, x_cat: Tensor, y: Tensor) -> None:
-        """Store the retrieval corpus. ``y`` is int64 class indices for
-        classification, or float ``(n, 1)`` (training-scale) for regression."""
-        for name, tensor in (("cand_x_num", x_num), ("cand_x_cat", x_cat), ("cand_y", y)):
-            if name in self._buffers:
-                setattr(self, name, tensor)
-            else:
-                self.register_buffer(name, tensor)
-
-    @property
-    def has_candidates(self) -> bool:
-        return "cand_y" in self._buffers
-
-    # ------------------------------------------------------------------ #
     def _encode(self, x_num: Tensor, x_cat: Tensor) -> tuple[Tensor, Tensor]:
         x = self.linear(self.embedding(x_num, x_cat))
         for block in self.encoder_blocks:
@@ -130,12 +115,35 @@ class TabR(nn.Module):
         return x, k
 
     def _candidate_keys(self) -> Tensor:
-        n = self.cand_y.shape[0]
-        keys = []
-        for start in range(0, n, self.candidate_chunk_size):
-            stop = min(start + self.candidate_chunk_size, n)
-            keys.append(self._encode(self.cand_x_num[start:stop], self.cand_x_cat[start:stop])[1])
-        return torch.cat(keys)
+        return torch.cat(
+            [
+                self._encode(self.cand_x_num[start:stop], self.cand_x_cat[start:stop])[1]
+                for start, stop in self._chunk_bounds(self.cand_y.shape[0])
+            ]
+        )
+
+    def _search_topk(self, k: Tensor, cand_k: Tensor, m: int, exclude: Tensor | None) -> Tensor:
+        """Nearest-candidate indices ``(B, m)`` by L2, streamed over
+        ``candidate_chunk_size`` blocks so peak memory is B x chunk. Row ``i``
+        excludes global candidate index ``exclude[i]`` when given. Matches an
+        unchunked ``cdist(...).topk(...)`` up to ties in the distances."""
+        best_vals: Tensor | None = None
+        best_idx: Tensor | None = None
+        for start, stop in self._chunk_bounds(cand_k.shape[0]):
+            dists = torch.cdist(k, cand_k[start:stop])
+            if exclude is not None:
+                local = exclude - start
+                rows = ((local >= 0) & (local < stop - start)).nonzero(as_tuple=True)[0]
+                dists[rows, local[rows]] = torch.inf
+            vals, idx = dists.topk(min(m, stop - start), dim=1, largest=False)
+            idx = idx + start
+            if best_vals is not None:
+                vals = torch.cat([best_vals, vals], dim=1)
+                idx = torch.cat([best_idx, idx], dim=1)
+            keep = min(m, vals.shape[1])
+            best_vals, sel = vals.topk(keep, dim=1, largest=False)
+            best_idx = idx.gather(1, sel)
+        return best_idx
 
     def forward(self, x_num: Tensor, x_cat: Tensor) -> Tensor:
         if not self.has_candidates:
@@ -149,13 +157,18 @@ class TabR(nn.Module):
 
         # Search without gradients; only the selected context is re-encoded
         # with gradients below (the original repo's memory_efficient path).
+        # The cache gate is evaluated outside no_grad so a grad-enabled eval
+        # forward never touches (or creates) the cache.
+        cache_usable = self._eval_cache_usable()
         with torch.no_grad():
-            cand_k = self._candidate_keys()
-            dists = torch.cdist(k, cand_k)
-            if excluding_self:
-                rows = torch.arange(k.shape[0], device=k.device)
-                dists[rows, self.current_batch_indices] = torch.inf
-            context_idx = dists.topk(m, dim=1, largest=False).indices  # (B, m)
+            if cache_usable:
+                if self._eval_cache is None:
+                    self._eval_cache = self._candidate_keys()
+                cand_k = self._eval_cache
+            else:
+                cand_k = self._candidate_keys()
+            exclude = self.current_batch_indices if excluding_self else None
+            context_idx = self._search_topk(k, cand_k, m, exclude)  # (B, m)
 
         batch_size = k.shape[0]
         flat = context_idx.reshape(-1)

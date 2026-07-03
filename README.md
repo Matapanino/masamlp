@@ -37,9 +37,11 @@ them. masaMLP is built around exactly those hooks:
 - **Multiclass, multioutput regression, class_weight, label smoothing**
   supported natively; built-in preprocessing (quantile scaling, missing
   values, categorical embeddings) so DataFrames go straight into `fit`.
-- **CPU / CUDA / MPS** behind `device="auto"`: device-resident tensors with
-  no DataLoader overhead, automatic full-batch mode for small data, bf16 AMP
-  on CUDA, opt-in `torch.compile` with eager fallback.
+- **CPU / CUDA / MPS / multi-GPU** behind `device="auto"`: device-resident
+  tensors with no DataLoader overhead, automatic full-batch mode for small
+  data, per-model bf16 AMP on CUDA, opt-in `torch.compile` with eager
+  fallback — and when several GPUs are detected, `n_ens` members train
+  concurrently, one worker per GPU.
 
 masaMLP deliberately does *not* try to re-benchmark the field — see
 [docs/attribution.md](docs/attribution.md) for the research and libraries it
@@ -156,9 +158,11 @@ reg2 = MasaRegressor.load_model("model_dir")
 
 ## Devices
 
-`device="auto"` resolves cuda > mps > cpu. CUDA gets bf16 AMP by default and
-optional `compile=True`; MPS and CPU train in float32. Details and caveats:
-[docs/devices.md](docs/devices.md).
+`device="auto"` resolves cuda > mps > cpu. CUDA gets bf16 AMP by default
+(per-model: the retrieval models opt out) and optional `compile=True`; MPS
+and CPU train in float32. With multiple GPUs and `n_ens > 1`, ensemble
+members are sharded across all GPUs and trained concurrently; opt out with
+`device="cuda:0"`. Details and caveats: [docs/devices.md](docs/devices.md).
 
 ## Development
 
