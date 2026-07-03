@@ -44,11 +44,16 @@ class TrainerConfig:
     # When set (typically ~0.99-0.999), eval / early stopping / the final
     # weights use the EMA copy instead of the last optimizer step.
     ema_decay: float | None = None
-    device: str = "auto"
+    device: str | torch.device = "auto"
     amp: str | bool = "auto"
     compile: bool = False
     early_stopping_rounds: int | None = None
     random_state: int | None = None
+    # "global" seeds python/NumPy/torch process-wide (the default, and the
+    # only mode that may run on the main thread). "device" seeds only this
+    # fit's CUDA generator — required inside ensemble-sharding worker
+    # threads, where touching process-global RNG state would race.
+    seed_scope: str = "global"
     verbose: int = 0
     n_threads: int | None = None
     eval_batch_size: int = 8192
@@ -222,8 +227,18 @@ class Trainer:
         config: TrainerConfig,
         inverse_target: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> TrainResult:
-        seed_everything(config.random_state)
         device = resolve_device(config.device)
+        if config.seed_scope == "global":
+            seed_everything(config.random_state)
+        elif config.seed_scope == "device":
+            if config.random_state is not None and device.type == "cuda":
+                torch.cuda.init()
+                index = device.index if device.index is not None else torch.cuda.current_device()
+                torch.cuda.default_generators[index].manual_seed(config.random_state)
+        else:
+            raise ValueError(
+                f"Unknown seed_scope {config.seed_scope!r}. Expected 'global' or 'device'"
+            )
         if device.type == "cpu":
             set_threads(config.n_threads)
 

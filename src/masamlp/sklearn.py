@@ -8,6 +8,7 @@ LightGBM-style surface — ``fit(X, y, sample_weight=..., eval_set=...)``,
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -16,7 +17,7 @@ import torch
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 
-from masamlp.core.device import resolve_device
+from masamlp.core.device import resolve_device, resolve_device_plan
 from masamlp.core.metrics import BaseMetric, get_metric, make_metric
 from masamlp.core.objectives import BaseObjective, apply_transform, make_objective
 from masamlp.core.trainer import (
@@ -264,7 +265,11 @@ class BaseMasaModel(BaseEstimator):
             for model in members:
                 model.set_candidates(train.x_num, train.x_cat, cand_y)
 
-        def member_config(seed: int | None) -> TrainerConfig:
+        def member_config(
+            seed: int | None,
+            device: str | torch.device | None = None,
+            seed_scope: str = "global",
+        ) -> TrainerConfig:
             return TrainerConfig(
                 n_epochs=self.n_epochs,
                 batch_size=self.batch_size,
@@ -277,11 +282,12 @@ class BaseMasaModel(BaseEstimator):
                 weight_decay_schedule=self.weight_decay_schedule,
                 grad_clip=self.grad_clip,
                 ema_decay=self.ema_decay,
-                device=self.device,
+                device=self.device if device is None else device,
                 amp=self.amp,
                 compile=self.compile,
                 early_stopping_rounds=self.early_stopping_rounds,
                 random_state=seed,
+                seed_scope=seed_scope,
                 verbose=self.verbose,
                 n_threads=self.n_threads,
             )
@@ -296,14 +302,39 @@ class BaseMasaModel(BaseEstimator):
             )
             result = results[0]
         else:
-            result = None
-            for member, model in enumerate(members):
-                seed = None if self.random_state is None else self.random_state + member
-                member_result = Trainer().fit(
-                    model, objective, train, eval_sets, metrics, member_config(seed), inverse
+            plan = resolve_device_plan(self.device, self.n_ens)
+            if plan is not None and objective.torch_modules():
+                warnings.warn(
+                    "objectives with torch modules share state across members and "
+                    "cannot train sharded; training sequentially on one device",
+                    stacklevel=2,
                 )
-                if result is None:
-                    result = member_result
+                plan = None
+            if plan is not None:
+                # Multiple GPUs detected: shard members across them, one
+                # worker thread per device (see core/parallel.py).
+                from masamlp.core.parallel import fit_members_sharded
+
+                configs = [
+                    member_config(
+                        None if self.random_state is None else self.random_state + member,
+                        device=plan[member],
+                        seed_scope="device",
+                    )
+                    for member in range(self.n_ens)
+                ]
+                result = fit_members_sharded(
+                    members, objective, train, eval_sets, metrics, configs, plan, inverse
+                )[0]
+            else:
+                result = None
+                for member, model in enumerate(members):
+                    seed = None if self.random_state is None else self.random_state + member
+                    member_result = Trainer().fit(
+                        model, objective, train, eval_sets, metrics, member_config(seed), inverse
+                    )
+                    if result is None:
+                        result = member_result
 
         self.preprocessor_ = pre
         self.models_ = members
@@ -370,10 +401,24 @@ class BaseMasaModel(BaseEstimator):
     def _predict_transformed(self, X: Any) -> np.ndarray:
         self._check_fitted()
         x_num, x_cat = self.preprocessor_.transform(X)
-        device = resolve_device(self.device)
-        data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat)).to(device)
         transform = self.transform_name_
         members = getattr(self, "models_", None) or [self.model_]
+        member_devices = {next(m.parameters()).device for m in members}
+        if len({d for d in member_devices if d.type == "cuda"}) > 1:
+            # Members are still sharded from a multi-GPU fit: predict on
+            # their resident devices instead of dragging them onto one.
+            from masamlp.core.parallel import predict_members_grouped
+
+            data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat))
+            preds = predict_members_grouped(
+                members,
+                data,
+                lambda raw: apply_transform(raw, transform),
+                self.eval_batch_size,
+            )
+            return preds[0] if len(preds) == 1 else np.mean(preds, axis=0)
+        device = resolve_device(self.device)
+        data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat)).to(device)
         preds = []
         for model in members:
             model.to(device)

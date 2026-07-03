@@ -43,6 +43,27 @@ def resolve_device(device: str | torch.device) -> torch.device:
     return torch.device(device)
 
 
+def resolve_device_plan(
+    device: str | torch.device, n_members: int
+) -> list[torch.device] | None:
+    """Per-member device assignment for ensemble-member sharding, or ``None``
+    for the single-device path.
+
+    Shards only when there are multiple members, CUDA reports multiple
+    devices, and the request is ``"auto"`` or the index-less ``"cuda"`` — an
+    explicit ``"cuda:0"``/``"cpu"``/``"mps"``/``torch.device`` opts out.
+    Member ``i`` trains on ``cuda:(i % n_gpus)``.
+    """
+    if n_members <= 1 or not isinstance(device, str) or device not in ("auto", "cuda"):
+        return None
+    if not torch.cuda.is_available():
+        return None
+    n_gpus = torch.cuda.device_count()
+    if n_gpus <= 1:
+        return None
+    return [torch.device("cuda", i % n_gpus) for i in range(n_members)]
+
+
 def resolve_amp(
     amp: str | bool, device: torch.device, model: torch.nn.Module | None = None
 ) -> tuple[bool, torch.dtype | None]:
