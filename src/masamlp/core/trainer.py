@@ -193,6 +193,10 @@ def _swap_in_params(model: nn.Module, new_params: dict[str, Tensor]) -> dict[str
         for name, param in model.named_parameters():
             saved[name] = param.detach().clone()
             param.copy_(new_params[name])
+    if hasattr(model, "invalidate_eval_cache"):
+        # Retrieval models cache eval-time corpus encodings; an in-place
+        # parameter swap changes them without any mode transition.
+        model.invalidate_eval_cache()
     return saved
 
 
@@ -405,8 +409,14 @@ class Trainer:
             if stopper is not None:
                 monitor = result.evals_result[eval_sets[0].name][metrics[0].name][-1]
                 if stopper.update(monitor, epoch):
+                    # Static buffers (retrieval corpora, possibly hundreds of
+                    # MB) never change during fit — keep them out of the
+                    # per-improvement CPU snapshot.
+                    static_keys = getattr(model, "static_state_keys", ())
                     best_state = {
-                        k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()
+                        k: v.detach().to("cpu", copy=True)
+                        for k, v in model.state_dict().items()
+                        if k not in static_keys
                     }
                 should_stop = stopper.should_stop
 
@@ -418,7 +428,8 @@ class Trainer:
         if wants_batch_indices:
             model.current_batch_indices = None
         if stopper is not None and best_state is not None:
-            model.load_state_dict(best_state)
+            # strict=False: the snapshot deliberately omits static buffers.
+            model.load_state_dict(best_state, strict=False)
             model.to(device)
             result.best_iteration = stopper.best_epoch
             result.best_score = float(stopper.best_value)
