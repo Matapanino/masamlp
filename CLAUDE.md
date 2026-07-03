@@ -3,11 +3,12 @@
 ## Project summary
 
 masaMLP is a PyTorch tabular deep learning library and the sibling of
-repleafgbm (same author, same API philosophy). It ships three architectures
-(TabularResNet, DANet, TabularLNN) behind two sklearn-compatible estimators,
-and differentiates from existing libraries (pytabkit, pytorch_tabular) by
-making **sample_weight, custom objectives, custom metrics, and early stopping
-on any metric** first-class.
+repleafgbm (same author, same API philosophy). It ships ten architectures
+(resnet, realmlp, ft_transformer, tab_transformer, danet, tabr, modernnca,
+gandalf, grn, lnn) behind two sklearn-compatible estimators, and
+differentiates from existing libraries (pytabkit, pytorch_tabular) by making
+**sample_weight, custom objectives, custom metrics, and early stopping on
+any metric** first-class.
 
 ## Core architectural rules
 
@@ -48,7 +49,9 @@ on any metric** first-class.
 - `src/masamlp/core/` — objectives, metrics, trainer, device, serialization.
 - `src/masamlp/models/` — registry (`register_model`/`build_model`),
   `base.py` FeatureEmbedding (categorical embeddings + PLR/periodic numeric),
-  `layers.py` (GhostBatchNorm1d, sparsemax, entmax15), resnet / danet / lnn.
+  `layers.py` (GhostBatchNorm1d, ScalingLayer, sparsemax/entmax15/t_softmax),
+  `retrieval.py` (candidate corpus + eval cache for tabr/modernnca), and one
+  file per architecture.
 - `src/masamlp/data/` — `TabularPreprocessor` (fitted on train only, state is
   json/npz-serializable) and the `TabularData` tensor bundle.
 - `tests/` — pytest; small seeded synthetic datasets (hundreds of rows).
@@ -64,3 +67,6 @@ follows Hasani et al.'s closed-form continuous-time equations.
 `bash scripts/check.sh` runs ruff + pytest + examples/quickstart.py. The
 differentiator gate is `tests/test_sample_weight.py`,
 `tests/test_custom_objective.py`, `tests/test_custom_metric.py`.
+`tests/test_docs_parameters.py` enforces that every estimator/model
+constructor parameter is documented in `docs/parameters.md` — new parameters
+need a doc entry in the same change.

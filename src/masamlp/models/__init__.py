@@ -14,6 +14,7 @@ from the config with their own token width.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 
 from torch import nn
@@ -48,6 +49,9 @@ _MODEL_REGISTRY: dict[str, Callable[..., nn.Module]] = {}
 # FeatureEmbedding options accepted inside model_params for every model.
 _EMBEDDING_KEYS = ("d_num_embedding", "n_frequencies", "sigma", "cat_emb_dim", "num_scaling")
 
+# Constructor parameters filled in by build_model, not user-facing knobs.
+_NON_PARAM_KEYS = frozenset({"self", "embedding", "embedding_config", "out_dim", "n_label_classes"})
+
 
 def register_model(name: str) -> Callable[[Callable[..., nn.Module]], Callable[..., nn.Module]]:
     def decorator(builder: Callable[..., nn.Module]) -> Callable[..., nn.Module]:
@@ -71,6 +75,22 @@ register_model("gandalf")(GandalfNet)
 register_model("grn")(GRNNet)
 
 
+def _check_model_params(name: str, builder: Callable[..., nn.Module], params: dict) -> None:
+    """Reject unknown model_params up front with the valid keys spelled out,
+    instead of the bare TypeError the constructor would raise."""
+    signature = inspect.signature(builder).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.values()):
+        return
+    unknown = sorted(k for k in params if k not in signature)
+    if unknown:
+        valid = sorted(k for k in signature if k not in _NON_PARAM_KEYS)
+        raise ValueError(
+            f"Unknown model_params {unknown} for model {name!r}. Valid keys: {valid}, "
+            f"plus the shared embedding keys {sorted(_EMBEDDING_KEYS)}. "
+            "See docs/parameters.md."
+        )
+
+
 def build_model(
     name: str,
     model_params: dict[str, object] | None,
@@ -84,6 +104,7 @@ def build_model(
     builder = _MODEL_REGISTRY[name]
     params = dict(model_params or {})
     embed_kwargs = {k: params.pop(k) for k in _EMBEDDING_KEYS if k in params}
+    _check_model_params(name, builder, params)
     if getattr(builder, "embedding_kind", "flat") == "tokens":
         config = {
             "n_num": n_num,

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Parameter reference (`docs/parameters.md`).** Complete documentation of
+  every estimator constructor parameter and every architecture's
+  `model_params` (depth/width/dropout knobs, defaults, sizing notes with
+  sources), plus the shared embedding keys. The README gains a
+  "Key parameters" summary table. Kept in sync with the code by
+  `tests/test_docs_parameters.py` (signature inspection).
+- **Friendlier `model_params` errors.** Unknown keys now raise a
+  `ValueError` listing the model's valid keys and the shared embedding keys
+  (previously a bare `TypeError` from the constructor). Builders accepting
+  `**kwargs` are exempt.
+
 ## 0.3.0 (2026-07-03)
 
 Speed release: retrieval-model inference cost, per-model AMP policy, and
