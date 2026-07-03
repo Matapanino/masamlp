@@ -260,7 +260,7 @@ class Trainer:
         wd_scheduled = config.weight_decay_schedule == "flat_cos"
         model_has_schedule = hasattr(model, "set_schedule_t")
 
-        amp_enabled, amp_dtype = resolve_amp(config.amp, device)
+        amp_enabled, amp_dtype = resolve_amp(config.amp, device, model)
         # GradScaler only exists for cuda/cpu; fp16 (pre-bf16 GPUs) needs it.
         scaler = torch.amp.GradScaler(
             "cuda" if device.type == "cuda" else "cpu",

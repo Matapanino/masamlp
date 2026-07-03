@@ -45,6 +45,7 @@ class BaseMasaModel(BaseEstimator):
         early_stopping_rounds: int | None = None,
         n_epochs: int = 256,
         batch_size: int | str | None = "auto",
+        eval_batch_size: int = 8192,
         learning_rate: float = 1e-3,
         weight_decay: float = 0.0,
         optimizer: str = "adamw",
@@ -74,6 +75,7 @@ class BaseMasaModel(BaseEstimator):
         self.early_stopping_rounds = early_stopping_rounds
         self.n_epochs = n_epochs
         self.batch_size = batch_size
+        self.eval_batch_size = eval_batch_size
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.optimizer = optimizer
@@ -266,6 +268,7 @@ class BaseMasaModel(BaseEstimator):
             return TrainerConfig(
                 n_epochs=self.n_epochs,
                 batch_size=self.batch_size,
+                eval_batch_size=self.eval_batch_size,
                 learning_rate=self.learning_rate,
                 weight_decay=self.weight_decay,
                 optimizer=self.optimizer,
@@ -375,7 +378,12 @@ class BaseMasaModel(BaseEstimator):
         for model in members:
             model.to(device)
             preds.append(
-                predict_transformed(model, data, lambda raw: apply_transform(raw, transform))
+                predict_transformed(
+                    model,
+                    data,
+                    lambda raw: apply_transform(raw, transform),
+                    self.eval_batch_size,
+                )
             )
         # Ensemble average on the transformed scale (probabilities for
         # classification), matching pytabkit's RealMLP ensembling.

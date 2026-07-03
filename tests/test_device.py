@@ -34,6 +34,27 @@ def test_amp_gating():
         resolve_amp("banana", cpu)
 
 
+def test_amp_auto_respects_model_policy():
+    class _NoAmp(torch.nn.Module):
+        amp_auto = False
+
+    # The model gate fires before any CUDA API call, so a cuda device object
+    # is safe to pass on CUDA-less machines.
+    assert resolve_amp("auto", torch.device("cuda"), _NoAmp()) == (False, None)
+    # Explicit amp=True overrides the model's auto policy.
+    enabled, dtype = resolve_amp(True, torch.device("cpu"), _NoAmp())
+    assert enabled and dtype == torch.bfloat16
+    # Models without the attribute keep the plain auto behavior.
+    assert resolve_amp("auto", torch.device("cpu"), torch.nn.Linear(2, 2)) == (False, None)
+
+
+def test_retrieval_models_opt_out_of_auto_amp():
+    from masamlp.models import ModernNCA, TabR
+
+    assert TabR.amp_auto is False
+    assert ModernNCA.amp_auto is False
+
+
 def test_n_threads_runs(reg_data):
     X, y, _, _ = reg_data
     m = MasaRegressor(device="cpu", n_threads=1, **_KW).fit(X, y)

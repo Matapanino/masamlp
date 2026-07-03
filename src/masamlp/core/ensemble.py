@@ -89,7 +89,7 @@ def fit_vectorized(
     device = resolve_device(config.device)
     if device.type == "cpu":
         set_threads(config.n_threads)
-    if resolve_amp(config.amp, device)[0]:
+    if resolve_amp(config.amp, device, models[0])[0]:
         warnings.warn(
             "AMP is disabled for vectorized ensembles; training in float32", stacklevel=2
         )

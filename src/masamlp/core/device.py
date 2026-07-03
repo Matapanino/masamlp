@@ -43,15 +43,22 @@ def resolve_device(device: str | torch.device) -> torch.device:
     return torch.device(device)
 
 
-def resolve_amp(amp: str | bool, device: torch.device) -> tuple[bool, torch.dtype | None]:
+def resolve_amp(
+    amp: str | bool, device: torch.device, model: torch.nn.Module | None = None
+) -> tuple[bool, torch.dtype | None]:
     """Return (enabled, autocast dtype) for mixed-precision training.
 
     ``"auto"`` enables bf16 on CUDA (fp16 on GPUs without bf16) and disables
-    AMP on CPU/MPS, where it rarely pays off for tabular-sized models.
+    AMP on CPU/MPS, where it rarely pays off for tabular-sized models. Models
+    may opt out of the auto policy with a class attribute ``amp_auto = False``
+    (retrieval models: KI-010 — autocast around cdist/topk is slower and
+    fp16 distances lose accuracy); an explicit ``amp=True`` still forces it.
     """
     if amp is False or amp == "off":
         return False, None
     if amp == "auto":
+        if model is not None and not getattr(model, "amp_auto", True):
+            return False, None
         if device.type != "cuda":
             return False, None
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16

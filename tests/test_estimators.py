@@ -135,3 +135,24 @@ def test_num_embedding_options(reg_data):
         m = MasaRegressor(num_embedding=mode, n_epochs=20, device="cpu", random_state=0,
                           model_params={"d": 32, "n_blocks": 1}).fit(X, y)
         assert np.isfinite(m.predict(X_test)).all()
+
+
+def test_eval_batch_size_reaches_training_eval_and_predict(monkeypatch, reg_data):
+    import masamlp.core.trainer as trainer_mod
+    import masamlp.sklearn as sklearn_mod
+
+    X, y, X_val, y_val = reg_data
+    seen: list[int] = []
+    orig = trainer_mod.predict_transformed
+
+    def spy(model, data, transform, batch_size=8192):
+        seen.append(batch_size)
+        return orig(model, data, transform, batch_size)
+
+    monkeypatch.setattr(trainer_mod, "predict_transformed", spy)
+    monkeypatch.setattr(sklearn_mod, "predict_transformed", spy)
+    m = MasaRegressor(n_epochs=2, eval_batch_size=64, device="cpu", random_state=0,
+                      model_params={"d": 32, "n_blocks": 1})
+    m.fit(X, y, eval_set=[(X_val, y_val)])  # per-epoch eval batches
+    m.predict(X_val)  # inference batches
+    assert seen and set(seen) == {64}
