@@ -61,12 +61,23 @@ policy.)
   set, matching the field-report finding that the accuracy cost is ≈ 0 on
   real data).
 
-## Multi-GPU (Kaggle 2xT4)
+## Multi-GPU (Kaggle 2xT4, torch 2.10.0+cu128)
 
-Verified via the `examples/kaggle/` notebooks and the CUDA-gated
-`tests/test_parallel.py::test_sharded_two_gpus_end_to_end` — see the
-published notebook outputs for wall times, sharded speedups, and max-abs
-prediction differences.
+Verified by running the four `examples/kaggle/` notebooks on Kaggle's
+"GPU T4 x2" (n_ens=4, `device="cuda:0"` vs `device="auto"`, same seeds):
+
+| notebook | single T4 fit | sharded fit | speedup | max abs pred diff | test acc |
+|---|---|---|---|---|---|
+| ft_transformer (covtype 100k) | 509.7s | 255.3s | x2.00 | 0.00e+00 | 0.885 |
+| tabr (covtype 200k, budget 50k) | 293.9s | 154.7s | x1.90 | 0.00e+00 | 0.934 |
+| modernnca (covtype 200k, full corpus) | 1471.9s | 734.8s | x2.00 | 0.00e+00 | 0.958 |
+| tab_transformer (adult 49k) | 87.5s | 41.8s | x2.10 | 0.00e+00 | 0.847 |
+
+Sharded and single-GPU runs picked the same best epoch and produced
+**bit-identical predictions** on the identical-GPU pair — sequential mode
+seeds every CUDA device to the member seed and the sharded worker seeds its
+device to the same value, so the RNG streams coincide (documented as
+expected-but-not-promised in docs/devices.md / KI-004).
 
 ## Verdict
 
