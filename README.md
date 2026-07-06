@@ -73,7 +73,17 @@ The complete list per model, with defaults and sizing notes, is in
 ```python
 clf = MasaClassifier(model="ft_transformer",
                      model_params={"n_blocks": 4, "d_block": 256})
+
+# realmlp is the free-form MLP: hidden_sizes IS the architecture
+# (length = depth, entries = per-layer width)
+reg = MasaRegressor(model="realmlp",
+                    model_params={"hidden_sizes": (512, 256, 128)})
 ```
+
+Layer-by-layer width control (`512 → 256 → 128`) is a `realmlp` feature —
+its `hidden_sizes` is the whole stack. The other architectures keep a
+constant width per their papers (residual streams require it); size those
+with `d`/`d_token` × `n_blocks`/`n_layers`.
 
 ## Key parameters
 
