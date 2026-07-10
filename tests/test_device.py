@@ -1,3 +1,5 @@
+import importlib.util
+
 import numpy as np
 import pytest
 import torch
@@ -8,6 +10,7 @@ from masamlp.regressor import MasaRegressor
 _KW = dict(n_epochs=10, random_state=0, model_params={"d": 32, "n_blocks": 1})
 
 cuda_available = torch.cuda.is_available()
+xla_available = importlib.util.find_spec("torch_xla") is not None
 # Functional probe, not is_available(): virtualized macOS CI runners report
 # MPS as available but fail on the first allocation.
 mps_available = mps_functional()
@@ -18,7 +21,14 @@ def test_resolve_device_auto_and_validation():
     assert dev.type in ("cuda", "mps", "cpu")
     assert resolve_device("cpu").type == "cpu"
     with pytest.raises(ValueError, match="Unknown device"):
-        resolve_device("tpu")
+        resolve_device("gpu")
+    if not xla_available:
+        # "xla"/"tpu" are known vocabulary; without torch_xla they fail with
+        # an install hint rather than an unknown-device error.
+        with pytest.raises(RuntimeError, match="torch_xla"):
+            resolve_device("xla")
+        with pytest.raises(RuntimeError, match="torch_xla"):
+            resolve_device("tpu")
     if not cuda_available:
         with pytest.raises(RuntimeError, match="CUDA"):
             resolve_device("cuda")
@@ -32,6 +42,25 @@ def test_amp_gating():
     assert resolve_amp(False, cpu) == (False, None)
     with pytest.raises(ValueError, match="amp"):
         resolve_amp("banana", cpu)
+
+
+def test_amp_auto_policies_on_xla_device_type():
+    # Pure-policy checks on a torch.device("xla") handle; no torch_xla needed.
+    xla = torch.device("xla")
+
+    class DictPolicy:
+        amp_auto = {"cuda": False}  # the retrieval models' policy
+
+    class HardOff:
+        amp_auto = False
+
+    assert resolve_amp("auto", xla, DictPolicy()) == (True, torch.bfloat16)
+    assert resolve_amp("auto", xla, HardOff()) == (False, None)
+    assert resolve_amp("auto", xla) == (True, torch.bfloat16)
+    assert resolve_amp(True, xla) == (True, torch.bfloat16)
+    if cuda_available:
+        cuda = torch.device("cuda")
+        assert resolve_amp("auto", cuda, DictPolicy()) == (False, None)
 
 
 def test_amp_auto_respects_model_policy(monkeypatch):
@@ -61,8 +90,9 @@ def test_amp_auto_respects_model_policy(monkeypatch):
 def test_amp_auto_model_flags():
     from masamlp.models import FTTransformer, ModernNCA, TabR
 
-    assert TabR.amp_auto is False  # KI-010
-    assert ModernNCA.amp_auto is False
+    # KI-010 is CUDA-scoped since 0.4.0: bf16 measured exact-and-faster on TPU.
+    assert TabR.amp_auto == {"cuda": False}
+    assert ModernNCA.amp_auto == {"cuda": False}
     assert FTTransformer.amp_auto == "bf16"  # fp16 slower + less accurate on T4
 
 

@@ -199,11 +199,18 @@ reg2 = MasaRegressor.load_model("model_dir")
 
 ## Devices
 
-`device="auto"` resolves cuda > mps > cpu. CUDA gets bf16 AMP by default
-(per-model: the retrieval models opt out) and optional `compile=True`; MPS
-and CPU train in float32. With multiple GPUs and `n_ens > 1`, ensemble
-members are sharded across all GPUs and trained concurrently; opt out with
-`device="cuda:0"`. Details and caveats: [docs/devices.md](docs/devices.md).
+`device="auto"` resolves tpu > cuda > mps > cpu. CUDA gets bf16 AMP by
+default (per-model policies apply) and optional `compile=True`; MPS and CPU
+train in float32. With multiple GPUs and `n_ens > 1`, ensemble members are
+sharded across all GPUs and trained concurrently; opt out with
+`device="cuda:0"`.
+
+**TPU (experimental, 0.4.0):** `device="tpu"` (or `"xla"`) trains on
+Cloud/Kaggle TPUs via `torch_xla` — bf16 by default, all ten models,
+verified on a Kaggle TPU VM. Kaggle grants TPU quota *separately* from GPU
+quota, so this is extra free accelerator time for competition workloads.
+Details, install pairing, and measured numbers:
+[docs/devices.md](docs/devices.md).
 
 ## Development
 

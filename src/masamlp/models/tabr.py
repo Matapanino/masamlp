@@ -132,9 +132,18 @@ class TabR(RetrievalBase):
         for start, stop in self._chunk_bounds(cand_k.shape[0]):
             dists = torch.cdist(k, cand_k[start:stop])
             if exclude is not None:
+                # Scatter +inf into each row's excluded column with static
+                # shapes; a nonzero() row gather has a data-dependent size
+                # (recompile per batch on XLA, host sync for the size on
+                # CUDA). Rows whose exclusion lies outside this chunk write
+                # their current value back.
                 local = exclude - start
-                rows = ((local >= 0) & (local < stop - start)).nonzero(as_tuple=True)[0]
-                dists[rows, local[rows]] = torch.inf
+                in_chunk = (local >= 0) & (local < stop - start)
+                col = local.clamp(0, stop - start - 1).unsqueeze(1)
+                cur = dists.gather(1, col)
+                dists.scatter_(
+                    1, col, torch.where(in_chunk.unsqueeze(1), torch.inf, cur)
+                )
             vals, idx = dists.topk(min(m, stop - start), dim=1, largest=False)
             idx = idx + start
             if best_vals is not None:

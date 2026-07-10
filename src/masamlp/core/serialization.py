@@ -104,10 +104,15 @@ def save_model_dir(est: Any, path: str) -> None:
     (out / _PRE_JSON).write_text(json.dumps(pre_meta, indent=2))
     np.savez(out / _PRE_NPZ, **pre_arrays)
 
+    # Normalize to CPU tensors: XLA tensors must not be pickled raw, and
+    # device-tagged archives (cuda:1, ...) are a portability hazard anyway.
+    def _cpu_state(module: torch.nn.Module) -> dict[str, torch.Tensor]:
+        return {k: v.detach().cpu() for k, v in module.state_dict().items()}
+
     if len(members) == 1:
-        torch.save(members[0].state_dict(), out / _STATE)
+        torch.save(_cpu_state(members[0]), out / _STATE)
     else:
-        torch.save({"members": [m.state_dict() for m in members]}, out / _STATE)
+        torch.save({"members": [_cpu_state(m) for m in members]}, out / _STATE)
 
 
 def load_model_dir(path: str, cls: type) -> Any:

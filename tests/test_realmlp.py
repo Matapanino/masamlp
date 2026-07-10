@@ -109,10 +109,14 @@ def test_scheduled_dropout_reacts_to_schedule():
     drop = ScheduledDropout(0.5)
     drop.train()
     x = torch.ones(64, 32)
-    drop.p_factor = 0.0  # end of flat_cos: dropout off
+    drop.set_factor(0.0)  # end of flat_cos: dropout off, exact identity
     np.testing.assert_array_equal(drop(x).numpy(), x.numpy())
-    drop.p_factor = 1.0
-    assert (drop(x) == 0).any()
+    drop.set_factor(1.0)
+    out = drop(x)
+    assert (out == 0).any()
+    assert torch.allclose(out[out != 0], torch.full_like(out[out != 0], 2.0))
+    drop.eval()
+    np.testing.assert_array_equal(drop(x).numpy(), x.numpy())
 
 
 def test_td_model_schedule_hook_and_param_groups():
@@ -125,7 +129,10 @@ def test_td_model_schedule_hook_and_param_groups():
     )
     model.set_schedule_t(1.0)
     drops = [m for m in model.modules() if isinstance(m, ScheduledDropout)]
-    assert drops and all(d.p_factor == pytest.approx(0.0, abs=1e-12) for d in drops)
+    # flat_cos(1.0) == 0 -> dropout off -> keep probability 1.
+    assert drops and all(
+        float(d._keep) == pytest.approx(1.0, abs=1e-12) for d in drops
+    )
     groups = model.param_groups()
     bias_group = next(g for g in groups if g.get("wd_factor") == 0.0)
     assert bias_group["lr_factor"] == 0.1

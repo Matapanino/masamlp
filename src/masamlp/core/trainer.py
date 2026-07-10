@@ -20,7 +20,14 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
-from masamlp.core.device import maybe_compile, resolve_amp, resolve_device, set_threads
+from masamlp.core.device import (
+    maybe_compile,
+    resolve_amp,
+    resolve_device,
+    set_threads,
+    xla_seed,
+    xla_sync_fn,
+)
 from masamlp.core.metrics import BaseMetric
 from masamlp.core.objectives import BaseObjective
 from masamlp.data.dataset import TabularData
@@ -112,16 +119,27 @@ def predict_transformed(
     batch_size: int = 8192,
 ) -> np.ndarray:
     """Batched inference -> prediction-scale NumPy array; ``(n,)`` when the
-    output has a single column."""
+    output has a single column. Chunk outputs stay on the device and move to
+    the host once at the end. On XLA a graph barrier runs per chunk: without
+    it every chunk's forward fuses into one program whose intermediates all
+    coexist — ModernNCA's streamed eval at 345k rows demanded 50.6 GiB of
+    16 GiB HBM (measured); the transfer stays batched, the graphs must not."""
     model.eval()
     outs: list[Tensor] = []
     device = data.x_num.device
-    with torch.inference_mode():
+    barrier = xla_sync_fn() if device.type == "xla" else None
+    # inference_mode tensors break XLA's lazy tracing ("Cannot set
+    # version_counter for inference tensor"); no_grad is the XLA-safe
+    # equivalent and passes the retrieval models' eval-cache gate too.
+    no_autograd = torch.no_grad() if device.type == "xla" else torch.inference_mode()
+    with no_autograd:
         for start in range(0, len(data), batch_size):
             idx = torch.arange(start, min(start + batch_size, len(data)), device=device)
             batch = data.slice(idx)
-            outs.append(transform(model(batch.x_num, batch.x_cat)).float().cpu())
-    pred = torch.cat(outs).numpy()
+            outs.append(transform(model(batch.x_num, batch.x_cat)).float())
+            if barrier is not None:
+                barrier()
+    pred = torch.cat(outs).cpu().numpy()
     return pred[:, 0] if pred.ndim == 2 and pred.shape[1] == 1 else pred
 
 
@@ -242,6 +260,10 @@ class Trainer:
             raise ValueError(
                 f"Unknown seed_scope {config.seed_scope!r}. Expected 'global' or 'device'"
             )
+        if device.type == "xla" and config.random_state is not None:
+            # torch.manual_seed does not reach the XLA device generator
+            # (dropout, rand_like); seed it under both seed scopes.
+            xla_seed(config.random_state)
         if device.type == "cpu":
             set_threads(config.n_threads)
 
@@ -280,10 +302,16 @@ class Trainer:
 
         amp_enabled, amp_dtype = resolve_amp(config.amp, device, model)
         # GradScaler only exists for cuda/cpu; fp16 (pre-bf16 GPUs) needs it.
+        # XLA is always bf16 or fp32, so the scaler stays a disabled
+        # passthrough there.
         scaler = torch.amp.GradScaler(
             "cuda" if device.type == "cuda" else "cpu",
             enabled=amp_enabled and amp_dtype == torch.float16,
         )
+        # Lazy XLA queues ops until a barrier; one barrier per optimizer step
+        # is the canonical granularity (without it the whole epoch fuses into
+        # one unboundedly large graph).
+        step_barrier = xla_sync_fn() if device.type == "xla" else None
 
         n = len(train)
         batch_size = _resolve_batch_size(config, n)
@@ -342,11 +370,20 @@ class Trainer:
         for epoch in range(config.n_epochs):
             run_model.train()
             epoch_loss = torch.zeros((), device=device)
-            batches = (
-                [None]
-                if full_batch
-                else torch.randperm(n, generator=gen).to(device).split(batch_size)
-            )
+            if full_batch:
+                batches: list[Tensor | None] = [None]
+            elif device.type == "xla":
+                # Move each chunk separately: split() views of one device
+                # tensor carry a tuple-typed XLA IR shape that crashes
+                # torch_xla's index_fill lowering (SIGABRT, measured on TPU
+                # v5e — docs/research/tpu-xla.md §8); per-chunk transfers
+                # give every batch a clean device-data node.
+                batches = [
+                    c.to(device)
+                    for c in torch.randperm(n, generator=gen).split(batch_size)
+                ]
+            else:
+                batches = torch.randperm(n, generator=gen).to(device).split(batch_size)
             for idx in batches:
                 batch = train if idx is None else train.slice(idx)
                 t = global_step / total_steps
@@ -384,6 +421,8 @@ class Trainer:
                 if ema_params is not None:
                     _update_ema(model, ema_params, ema_decay)
                 epoch_loss += loss * (len(batch) / n)
+                if step_barrier is not None:
+                    step_barrier()
             # One host sync per epoch keeps the GPU pipeline full.
             epoch_loss_val = float(epoch_loss)
             if not np.isfinite(epoch_loss_val):
