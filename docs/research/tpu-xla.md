@@ -116,18 +116,37 @@ study (Kalamkar et al. 2019 [19]).
   (pytorch_tabular inherits at most nominal Lightning TPU strategies;
   pytabkit is CPU/CUDA) — the feature is a real differentiator.
 
-## 7. Wave A probe list (updates this file)
+## 7. Wave A findings (Kaggle, 2026-07-10 — answers the probe list)
 
-1. Preinstalled torch/torch_xla versions; `torch_xla.sync` availability.
-2. Device enumeration from a single process (how many `xla` devices
-   visible; behavior with `TPU_VISIBLE_CHIPS`).
-3. `torch.autocast("xla", bf16)` works on the image's version.
-4. Tensor-lr AdamW (and `capturable` requirement, if any) on XLA —
-   verified first on XLA:CPU locally/CI, re-verified on TPU.
-5. Per-model `met.metrics_report()`: recompile/fallback counts for the
-   tiny zoo; identify any op falling back to CPU (aten counters).
-6. bf16 autocast effect on retrieval models' accuracy/speed (KI-010
-   re-measured on TPU).
+1. **Kaggle's `Tpu1VmV38` accelerator now provisions a TPU v5e-8**
+   (`TPU_ACCELERATOR_TYPE=v5litepod-8`): 8 single-core v5e chips
+   (~197 bf16 TFLOPS each — L4-class+, not the v3 core assumed in §5),
+   224-vCPU host, python 3.12.13, torch 2.8.0+cpu, torch_xla 2.8.0
+   (`torch_xla.sync`/`manual_seed` present — the legacy shim is a dormant
+   safety net).
+2. **One process addresses all 8 devices** (`xla:0..7`,
+   `addressable_device_count=8`) — the §3 one-process-per-chip constraint
+   is v2/v3-specific and moot on v5e. `TPU_VISIBLE_CHIPS=0` correctly
+   restricts to one device. In-library thread-per-device member sharding
+   is therefore *re-opened*; wave B carries the thread-concurrency probe
+   that decides it.
+3. Zoo (all 10 models, fp32): trained and predicted correctly; save →
+   CPU-load prediction parity **bitwise exact** for all ten; **3 compiles
+   per model**; the only aten fallback is `aten::_local_scalar_dense` ×
+   n_epochs — the designed one-host-sync-per-epoch. Zero unexpected
+   recompiles or fallbacks: the static-shape rewrites (ADR 0003 §2) hold
+   on hardware.
+4. **Scalar-lifting confirmed on TPU**: coslog4 lr + flat_cos wd +
+   scheduled dropout, 2 epochs → 3 compiles vs 8 epochs → 2 compiles.
+   Per-step Python-float schedules do NOT recompile in lazy mode; no
+   tensor-lr machinery needed (dropout's op-attribute `p` was the one
+   real constant-bake, fixed by the tensor-p ScheduledDropout).
+5. `torch.inference_mode` breaks XLA lazy tracing ("Cannot set
+   version_counter for inference tensor") — caught by the XLA:CPU CI
+   before any TPU time was spent; prediction uses `no_grad` on XLA.
+6. bf16 at toy scale (resnet 50k, 3 epochs incl. compile) was not faster
+   than fp32 (22.0s vs 17.3s) — expected at compile-dominated sizes;
+   wave B measures the real matrix (KI-010 re-measure included).
 
 ## Sources
 

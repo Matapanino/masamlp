@@ -20,17 +20,19 @@ Decisions from the 2026-07-10/11 design interview (grilling session):
 1. **Goal — single-device speed first, sharding conditional.** v1 optimizes
    the single-XLA-device path. Success criterion: the matmul-heavy models
    (`resnet`, `realmlp`, `ft_transformer`, `tab_transformer`, `tabr`,
-   `modernnca`) at ~345k rows train at least as fast on one TPU v3 core as
+   `modernnca`) at ~345k rows train at least as fast on one TPU device as
    the measured T4 baselines (docs/verdicts/2026-07-02). Ensemble-member
-   sharding across the 8 cores of a v3-8 (the TPU analog of the 0.3.0
-   multi-GPU sharding) was conditional on PJRT letting one process drive
-   all cores from threads; **research resolved the condition against it**
-   (PJRT on v2/v3: one process opens at most one chip = 2 cores — see
-   docs/research/tpu-xla.md §3), so in-library sharding moves to 0.5.0.
-   0.4.0 instead documents the full-board recipe: one user process per
-   chip via `TPU_VISIBLE_CHIPS`, e.g. four concurrent fits for
-   HPO/ensembling. *Rejected:* multi-core as the v1 headline (impossible
-   in-process on v2/v3); inference-only TPU support (forfeits the
+   sharding across a multi-device TPU (the TPU analog of the 0.3.0
+   multi-GPU sharding) is conditional on PJRT letting one process drive
+   all devices from threads. The docs' one-process-per-chip rule turned
+   out to be v2/v3-specific — **Kaggle's TPU runtime is now a v5e-8,
+   where one process addresses all 8 devices** (wave A, research §7) —
+   so the condition is decided empirically by wave B's thread-per-device
+   concurrency probe: works-and-scales ⇒ sharding ships as a
+   `core/parallel.py` extension; otherwise it defers to 0.5.0 and 0.4.0
+   documents the one-process-per-device `TPU_VISIBLE_CHIPS` recipe.
+   *Rejected:* multi-core as the v1 headline (the single-device path must
+   land first regardless); inference-only TPU support (forfeits the
    training quota value).
 
 2. **Backend — torch_xla, nothing else.** Models stay pure PyTorch

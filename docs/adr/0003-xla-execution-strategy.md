@@ -56,12 +56,13 @@ are functions of batch shape only; sparsemax/entmax sort compiles fine
    *Rejected:* XLA-only forks (double maintenance, models learn about
    devices).
 
-3. **Schedules become tensor-valued, semantics unchanged.** The per-step lr
-   factor is applied through a device-resident tensor — wrapping the lr in
-   a Tensor is the same fix the official `torch.compile` optimizer recipe
-   prescribes for exactly this recompile (research §2); the remaining
-   detail *(confirm on XLA:CPU: `capturable` requirement, and whether
-   `torch_xla.amp.syncfree` optimizers measure better)*; scheduled dropout
+3. **Only op-attribute scalars need tensorizing; arithmetic scalars are
+   lifted.** torch_xla's lazy mode lifts arithmetic scalars (optimizer lr,
+   weight decay, EMA decay, bias corrections) into graph *parameters*, so
+   per-step Python-float schedules do not recompile — **measured on TPU:
+   compile count is epoch-independent under coslog4 + flat_cos wd
+   (wave A, research §7.4)**. The one true constant-bake was
+   `F.dropout`'s `p` (an op attribute, not an operand); scheduled dropout
    gets a tensor-probability implementation (bernoulli mask from
    `torch.rand_like` compared to a device tensor) selected transparently —
    same math, same seeds discipline, no per-step graph constants.
