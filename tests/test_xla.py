@@ -183,6 +183,26 @@ def test_zoo_fit_predict_xla(name, clf_data):
     np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-5)
 
 
+@pytest.mark.parametrize("name", ["tabr", "modernnca"])
+def test_retrieval_minibatch_xla(name, clf_data):
+    # Regression: batch indices that were randperm().split() views crashed
+    # torch_xla's index_fill lowering (SIGABRT on TPU v5e); on XLA the
+    # trainer now feeds each batch as a clean per-chunk index tensor.
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    m = MasaClassifier(
+        model=name,
+        model_params=dict(TINY_PARAMS[name]),
+        n_epochs=2,
+        batch_size=64,
+        device="xla",
+        amp=False,
+        random_state=0,
+    ).fit(X, y)
+    assert np.all(np.isfinite(m.predict_proba(X_test)))
+
+
 def test_vectorized_rejected_on_xla(reg_data):
     X, y, _, _ = reg_data
     m = _regressor(n_ens=2, ens_mode="vectorized", model="resnet")

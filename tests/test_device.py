@@ -44,6 +44,25 @@ def test_amp_gating():
         resolve_amp("banana", cpu)
 
 
+def test_amp_auto_policies_on_xla_device_type():
+    # Pure-policy checks on a torch.device("xla") handle; no torch_xla needed.
+    xla = torch.device("xla")
+
+    class DictPolicy:
+        amp_auto = {"cuda": False}  # the retrieval models' policy
+
+    class HardOff:
+        amp_auto = False
+
+    assert resolve_amp("auto", xla, DictPolicy()) == (True, torch.bfloat16)
+    assert resolve_amp("auto", xla, HardOff()) == (False, None)
+    assert resolve_amp("auto", xla) == (True, torch.bfloat16)
+    assert resolve_amp(True, xla) == (True, torch.bfloat16)
+    if cuda_available:
+        cuda = torch.device("cuda")
+        assert resolve_amp("auto", cuda, DictPolicy()) == (False, None)
+
+
 def test_amp_auto_respects_model_policy(monkeypatch):
     import masamlp.core.device as device_mod
 
@@ -71,8 +90,9 @@ def test_amp_auto_respects_model_policy(monkeypatch):
 def test_amp_auto_model_flags():
     from masamlp.models import FTTransformer, ModernNCA, TabR
 
-    assert TabR.amp_auto is False  # KI-010
-    assert ModernNCA.amp_auto is False
+    # KI-010 is CUDA-scoped since 0.4.0: bf16 measured exact-and-faster on TPU.
+    assert TabR.amp_auto == {"cuda": False}
+    assert ModernNCA.amp_auto == {"cuda": False}
     assert FTTransformer.amp_auto == "bf16"  # fp16 slower + less accurate on T4
 
 

@@ -80,8 +80,13 @@ are functions of batch shape only; sparsemax/entmax sort compiles fine
    Confirmed by research: lazy tracing is still torch_xla's default mode,
    `torch_xla.sync()` is the current step-barrier name (`xm.mark_step`
    legacy shim kept in case Kaggle's image lags — research §1/§6), eager
-   mode stays experimental, and `torch.compile(backend="openxla")` is the
-   forward-looking alternative behind the existing `compile=True` flag.
+   mode stays experimental. `torch.compile(backend="openxla")` was
+   evaluated and **rejected**: it trained ~40% faster but with badly
+   degraded accuracy on TPU v5e (research §8.3), so `compile=True` warns
+   and stays lazy on XLA. Also measured: batch-index tensors must be
+   per-chunk transfers on XLA, not `split()` views (torch_xla `index_fill`
+   SIGABRT — research §8.1), and prediction uses `no_grad` on XLA
+   (`inference_mode` tensors break lazy tracing).
 
 5. **GradScaler bypassed; autocast targets `"xla"`.** `resolve_amp` returns
    bf16 on XLA under `amp="auto"` (ADR 0002 §5); the trainer constructs no

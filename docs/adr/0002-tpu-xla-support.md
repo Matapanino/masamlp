@@ -23,17 +23,16 @@ Decisions from the 2026-07-10/11 design interview (grilling session):
    `modernnca`) at ~345k rows train at least as fast on one TPU device as
    the measured T4 baselines (docs/verdicts/2026-07-02). Ensemble-member
    sharding across a multi-device TPU (the TPU analog of the 0.3.0
-   multi-GPU sharding) is conditional on PJRT letting one process drive
-   all devices from threads. The docs' one-process-per-chip rule turned
-   out to be v2/v3-specific — **Kaggle's TPU runtime is now a v5e-8,
-   where one process addresses all 8 devices** (wave A, research §7) —
-   so the condition is decided empirically by wave B's thread-per-device
-   concurrency probe: works-and-scales ⇒ sharding ships as a
-   `core/parallel.py` extension; otherwise it defers to 0.5.0 and 0.4.0
-   documents the one-process-per-device `TPU_VISIBLE_CHIPS` recipe.
-   *Rejected:* multi-core as the v1 headline (the single-device path must
-   land first regardless); inference-only TPU support (forfeits the
-   training quota value).
+   multi-GPU sharding) was conditional on PJRT letting one process drive
+   all devices from threads. Wave A showed one process *addresses* all 8
+   devices of Kaggle's v5e-8, but wave B's concurrency probe **rejected
+   the condition**: concurrent per-device fits from threads crash inside
+   torch_xla's process-global graph executor or serialize catastrophically
+   (research §8.4). In-library TPU sharding is therefore out for 0.4.0;
+   the full-board story is the documented one-process-per-device
+   `TPU_VISIBLE_CHIPS` recipe. *Rejected:* multi-core as the v1 headline
+   (the single-device path must land first regardless); inference-only
+   TPU support (forfeits the training quota value).
 
 2. **Backend — torch_xla, nothing else.** Models stay pure PyTorch
    `nn.Module`s; torch_xla is the only backend that makes TPU a *device*

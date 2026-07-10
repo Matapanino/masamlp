@@ -69,11 +69,16 @@ Design record: ADR 0002/0003; survey: [research/tpu-xla.md](research/tpu-xla.md)
 - Training runs in torch_xla's default lazy-tensor mode with one graph
   barrier per optimizer step. The index-slice batching produces a fixed
   two-shape set per fit (`batch_size`, `n % batch_size`), so everything
-  compiles once and replays. `compile=True` switches to
-  `torch.compile(backend="openxla")` instead (experimental).
+  compiles once and replays (measured: 3-10 compiles per fit, count
+  independent of epochs — per-step lr/wd/dropout schedules included).
+  `compile=True` is refused with a warning on XLA: the openxla dynamo
+  backend trained ~40% faster but with badly degraded accuracy in the TPU
+  v5e verification (ft_transformer rmse 0.20 → 3.18).
 - `amp="auto"` means **bf16 autocast** (TPUs are bf16-native; no GradScaler
-  exists on this path). Per-model `amp_auto` policies apply as on CUDA.
-  fp16 is never used on TPU.
+  exists on this path; fp16 is never used). Per-model `amp_auto` policies
+  are device-aware: the retrieval models' KI-010 opt-out applies on CUDA
+  only — on the TPU, bf16 matched fp32 retrieval predictions exactly and
+  fit 1.5x / predicted 7x faster (345k rows, v5e).
 - `batch_size="auto"` resolves exactly as on every other device — masaMLP
   never changes convergence behavior per device. TPUs like large batches:
   for throughput on big data, set `batch_size` (and re-tune
@@ -85,9 +90,11 @@ Design record: ADR 0002/0003; survey: [research/tpu-xla.md](research/tpu-xla.md)
   tuned for TPU.
 - `ens_mode="vectorized"` raises on XLA (torch.func vmap over lazy tensors
   is unvalidated); loop-mode `n_ens` works normally on the single device.
-- Multi-core TPUs (e.g. a v3-8's 8 cores): PJRT limits one process to one
-  chip, so in-library member sharding is deferred (roadmap). To use the
-  whole board today, run one process per chip yourself:
+- Multi-device TPUs (e.g. a v5e-8's 8 chips): one process *sees* all
+  devices, but torch_xla's lazy graph executor is not thread-safe across
+  them — concurrent per-device fits from threads crashed or serialized in
+  the TPU verification — so in-library member sharding stays CUDA-only
+  (roadmap). To use the whole board, run one process per device yourself:
   `TPU_VISIBLE_CHIPS=0 python fit_a.py & TPU_VISIBLE_CHIPS=1 python fit_b.py & ...`
 - Reproducibility: same seed + same device ⇒ same result holds on XLA (the
   XLA device RNG is seeded from `random_state`); XLA vs CUDA/CPU results

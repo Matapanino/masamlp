@@ -365,11 +365,20 @@ class Trainer:
         for epoch in range(config.n_epochs):
             run_model.train()
             epoch_loss = torch.zeros((), device=device)
-            batches = (
-                [None]
-                if full_batch
-                else torch.randperm(n, generator=gen).to(device).split(batch_size)
-            )
+            if full_batch:
+                batches: list[Tensor | None] = [None]
+            elif device.type == "xla":
+                # Move each chunk separately: split() views of one device
+                # tensor carry a tuple-typed XLA IR shape that crashes
+                # torch_xla's index_fill lowering (SIGABRT, measured on TPU
+                # v5e — docs/research/tpu-xla.md §8); per-chunk transfers
+                # give every batch a clean device-data node.
+                batches = [
+                    c.to(device)
+                    for c in torch.randperm(n, generator=gen).split(batch_size)
+                ]
+            else:
+                batches = torch.randperm(n, generator=gen).to(device).split(batch_size)
             for idx in batches:
                 batch = train if idx is None else train.slice(idx)
                 t = global_step / total_steps

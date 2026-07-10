@@ -187,16 +187,20 @@ def resolve_amp(
     (TPUs are bf16-native; no GradScaler is ever needed there), and disables
     AMP on CPU/MPS, where it rarely pays off for tabular-sized models. Models
     may qualify the auto policy with a class attribute ``amp_auto``:
-    ``False`` opts out entirely (retrieval models: KI-010 — autocast around
-    cdist/topk is slower and fp16 distances lose accuracy on T4; re-measured
-    per device family); ``"bf16"`` accepts bf16 but not fp16 (ft_transformer:
-    fp16 measured slower and less accurate on T4). An explicit ``amp=True``
-    still forces AMP on.
+    ``False`` opts out entirely; a dict keys the policy by device type
+    (retrieval models use ``{"cuda": False}`` — KI-010's autocast slowdown
+    and fp16 accuracy risk are CUDA findings; on bf16-native TPUs bf16
+    matched fp32 exactly and ran 1.5-7x faster, measured on v5e);
+    ``"bf16"`` accepts bf16 but not fp16 (ft_transformer: fp16 measured
+    slower and less accurate on T4). An explicit ``amp=True`` still forces
+    AMP on.
     """
     if amp is False or amp == "off":
         return False, None
     if amp == "auto":
         policy = getattr(model, "amp_auto", True) if model is not None else True
+        if isinstance(policy, dict):
+            policy = policy.get(device.type, True)
         if policy is False:
             return False, None
         if device.type == "xla":
@@ -221,17 +225,23 @@ def resolve_amp(
 
 def maybe_compile(model: torch.nn.Module, enable: bool, device: torch.device) -> torch.nn.Module:
     """Apply ``torch.compile`` when requested, falling back with a warning.
-    On XLA devices the dynamo backend is ``openxla`` (the default backend
-    assumes cuda/cpu); without the flag XLA runs in lazy-tensor mode, which
-    is torch_xla's default and masaMLP's recommended mode."""
+    XLA devices always run in lazy-tensor mode: the ``openxla`` dynamo
+    backend trained ~40% faster but with badly degraded accuracy in the TPU
+    v5e verification (ft_transformer rmse 0.20 -> 3.18, research §8), so
+    ``compile=True`` is refused there rather than silently miscompiled."""
     if not enable:
         return model
     if device.type == "mps":
         warnings.warn("torch.compile is disabled on MPS; running eager", stacklevel=2)
         return model
+    if device.type == "xla":
+        warnings.warn(
+            "torch.compile is disabled on XLA (the openxla backend trained "
+            "inaccurately in TPU verification); running in lazy-tensor mode",
+            stacklevel=2,
+        )
+        return model
     try:
-        if device.type == "xla":
-            return torch.compile(model, backend="openxla")
         return torch.compile(model)
     except Exception as exc:  # pragma: no cover - depends on toolchain
         warnings.warn(f"torch.compile failed ({exc!r}); running eager", stacklevel=2)

@@ -38,9 +38,11 @@ from torch import Tensor, nn
 
 class RetrievalBase(nn.Module):
     wants_batch_indices = True
-    # KI-010: retrieval search (cdist/topk) gains nothing from autocast and
-    # fp16 distances are accuracy-risky; amp="auto" resolves to off.
-    amp_auto = False
+    # KI-010 is a CUDA finding: autocast around the cdist/topk search is
+    # slower there and fp16 distances are accuracy-risky. On XLA the MXU is
+    # bf16-native — measured on TPU v5e at 345k rows, bf16 matches fp32
+    # predictions exactly and fits 1.5x faster (predicts 7x faster).
+    amp_auto = {"cuda": False}
     # Buffers that never change during fit; the trainer skips them in
     # early-stopping snapshots and restores with strict=False.
     static_state_keys = ("cand_x_num", "cand_x_cat", "cand_y")

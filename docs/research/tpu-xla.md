@@ -148,6 +148,43 @@ study (Kalamkar et al. 2019 [19]).
    than fp32 (22.0s vs 17.3s) — expected at compile-dominated sizes;
    wave B measures the real matrix (KI-010 re-measure included).
 
+## 8. Wave B findings (Kaggle v5e-8, 2026-07-10 — the decisions they forced)
+
+1. **torch_xla `index_fill` crashes (SIGABRT) on split-view indices**: batch
+   indices produced as `randperm(n).to(device).split(batch_size)` views
+   carry a tuple-typed XLA IR shape that `IndexFillOp`'s `EnsureRank1`
+   cannot read (`xla::Shape::array_state` check failure). Hit by
+   ModernNCA's key sampling in every minibatch fit; invisible to wave A
+   and the first CI suite because both were full-batch. Fix: on XLA the
+   trainer transfers each permutation chunk separately (clean device-data
+   nodes); a minibatch retrieval test now guards it in CI.
+2. **bf16 is the right default, and KI-010 is CUDA-scoped**: tabr @345k —
+   fp32 fit 153.1s / predict(50k) 49.2s vs bf16 fit 104.5s / predict 6.7s
+   with **identical rmse (0.1793)**. `amp_auto` became device-keyed
+   (`{"cuda": False}` on retrieval models). Across the matrix, bf16
+   predict times beat fp32 by 3-12x (XLA fp32 eval graphs are slow).
+3. **openxla dynamo backend miscompiles training**: ft_transformer lazy
+   49.2s / rmse 0.2012 vs `compile=True` 29.1s / **rmse 3.18**.
+   `compile=True` on XLA now warns and stays lazy.
+4. **Thread-per-device sharding is dead**: 4 concurrent single-device fits
+   from threads → 2 crashed inside `XLAGraphExecutor::CollectSyncTensors`
+   / `XLATensor::shape` ("Check failed: tensor_data"), 1 degraded from
+   ~15s to 3785s. torch_xla's lazy executor is process-global, not
+   per-device-thread-safe. In-library TPU sharding is off the table for
+   0.4.0 (CUDA sharding unaffected); the full-board story is the
+   one-process-per-device `TPU_VISIBLE_CHIPS` recipe (validated in wave A).
+5. **Speed vs the L4 verdict (50k rows, verdict configs, bf16)**: resnet
+   34.8s (21.8s at batch 8192), realmlp-TD 60.3s, ft_transformer 38.4s
+   (L4: 24.7s), tabr 17.1s (L4: 12.3s), tab_transformer 69.0s (L4: 12.3s —
+   the one clearly dispatch-bound loser at batch 1024; 34.0s at 8192).
+   Large batches reclaim throughput but change convergence (rmse column) —
+   exactly why batch defaults stay device-independent and the big-batch
+   story is documentation. Host-CPU context: the 224-vCPU host beats the
+   single chip on realmlp at batch 1024 (34.1s) — per-step dispatch, not
+   FLOPs, is the tax at tabular batch sizes.
+6. In-process compile caching is real: repeat fits of the same config
+   compile 0 times and run 2-3x faster than the first fit.
+
 ## Sources
 
 1. https://github.com/pytorch/xla/releases
