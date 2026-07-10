@@ -40,8 +40,9 @@ class RetrievalBase(nn.Module):
     wants_batch_indices = True
     # KI-010 is a CUDA finding: autocast around the cdist/topk search is
     # slower there and fp16 distances are accuracy-risky. On XLA the MXU is
-    # bf16-native — measured on TPU v5e at 345k rows, bf16 matches fp32
-    # predictions exactly and fits 1.5x faster (predicts 7x faster).
+    # bf16-native — measured on TPU v5e (cold compile cache): bf16 fits
+    # ModernNCA 28% and TabR@345k 9% faster at equivalent rmse. Prediction
+    # is unaffected either way (autocast wraps only the training step).
     amp_auto = {"cuda": False}
     # Buffers that never change during fit; the trainer skips them in
     # early-stopping snapshots and restores with strict=False.

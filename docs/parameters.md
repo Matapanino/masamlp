@@ -101,7 +101,7 @@ Built-in metrics (string values):
 | Parameter | Default | Meaning |
 |---|---|---|
 | `device` | `"auto"` | `"auto"` resolves tpu > cuda > mps > cpu; or an explicit `"cpu"` / `"cuda"` / `"cuda:0"` / `"mps"` / `"xla"` / `"tpu"` (experimental — `"tpu"` requires the XLA backend to really be a TPU, `"xla"` accepts any, e.g. `PJRT_DEVICE=CPU`; needs `torch_xla`). With multiple GPUs and `n_ens > 1`, members train concurrently, one worker per GPU (see [devices.md](devices.md)). |
-| `amp` | `"auto"` | Mixed precision on CUDA and XLA: `"auto"` follows each model's policy (bf16 by default; retrieval models opt out on CUDA only — on TPUs bf16 measured exact and faster; `ft_transformer` accepts bf16 but not fp16), `True`/`"on"` forces AMP, `False`/`"off"` disables it. TPUs always use bf16 (never fp16) and need no gradient scaling. |
+| `amp` | `"auto"` | Mixed precision on CUDA and XLA: `"auto"` follows each model's policy (bf16 by default; retrieval models opt out on CUDA only — on TPUs bf16 measured moderately faster at equivalent rmse; `ft_transformer` accepts bf16 but not fp16), `True`/`"on"` forces AMP, `False`/`"off"` disables it. TPUs always use bf16 (never fp16) and need no gradient scaling. |
 | `compile` | `False` | Opt-in `torch.compile` with eager fallback. Refused (warning) on XLA — the openxla backend trained inaccurately in TPU verification; lazy-tensor mode is the XLA path. |
 | `n_threads` | `None` | Caps torch CPU threads (`None` = torch default). |
 | `verbose` | `0` | `0` is silent; `k > 0` logs the metrics every `k` epochs. |

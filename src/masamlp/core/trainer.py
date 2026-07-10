@@ -120,11 +120,14 @@ def predict_transformed(
 ) -> np.ndarray:
     """Batched inference -> prediction-scale NumPy array; ``(n,)`` when the
     output has a single column. Chunk outputs stay on the device and move to
-    the host once — one transfer (and on XLA one graph execution) per call
-    instead of one per chunk."""
+    the host once at the end. On XLA a graph barrier runs per chunk: without
+    it every chunk's forward fuses into one program whose intermediates all
+    coexist — ModernNCA's streamed eval at 345k rows demanded 50.6 GiB of
+    16 GiB HBM (measured); the transfer stays batched, the graphs must not."""
     model.eval()
     outs: list[Tensor] = []
     device = data.x_num.device
+    barrier = xla_sync_fn() if device.type == "xla" else None
     # inference_mode tensors break XLA's lazy tracing ("Cannot set
     # version_counter for inference tensor"); no_grad is the XLA-safe
     # equivalent and passes the retrieval models' eval-cache gate too.
@@ -134,6 +137,8 @@ def predict_transformed(
             idx = torch.arange(start, min(start + batch_size, len(data)), device=device)
             batch = data.slice(idx)
             outs.append(transform(model(batch.x_num, batch.x_cat)).float())
+            if barrier is not None:
+                barrier()
     pred = torch.cat(outs).cpu().numpy()
     return pred[:, 0] if pred.ndim == 2 and pred.shape[1] == 1 else pred
 

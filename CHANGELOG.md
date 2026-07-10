@@ -15,8 +15,8 @@
   ADR 0002/0003; measurements: docs/verdicts/2026-07-10-tpu-report.md.
 - **Per-model AMP policies are now device-aware.** `amp_auto` may map
   device types to policies; the retrieval models' KI-010 fp32 opt-out is
-  CUDA-only — on TPUs bf16 matched fp32 retrieval predictions exactly and
-  ran 1.5-7x faster (measured, 345k rows).
+  CUDA-only — on TPUs bf16 trained them moderately faster (ModernNCA −28%,
+  TabR@345k −9%) at equivalent rmse. Prediction is amp-independent.
 - **Cross-version note:** the tabr exclusion mask and ModernNCA candidate
   sampling were rewritten to static-shape forms (required for XLA, also
   removes a host sync on CUDA), and `save_model` now normalizes state

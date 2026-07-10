@@ -75,10 +75,11 @@ Design record: ADR 0002/0003; survey: [research/tpu-xla.md](research/tpu-xla.md)
   backend trained ~40% faster but with badly degraded accuracy in the TPU
   v5e verification (ft_transformer rmse 0.20 → 3.18).
 - `amp="auto"` means **bf16 autocast** (TPUs are bf16-native; no GradScaler
-  exists on this path; fp16 is never used). Per-model `amp_auto` policies
-  are device-aware: the retrieval models' KI-010 opt-out applies on CUDA
-  only — on the TPU, bf16 matched fp32 retrieval predictions exactly and
-  fit 1.5x / predicted 7x faster (345k rows, v5e).
+  exists on this path; fp16 is never used; autocast wraps the training step
+  only — prediction always runs fp32). Per-model `amp_auto` policies are
+  device-aware: the retrieval models' KI-010 opt-out applies on CUDA only —
+  on the TPU, bf16 trained them moderately faster (ModernNCA −28%,
+  TabR@345k −9%, cold cache) at equivalent rmse.
 - `batch_size="auto"` resolves exactly as on every other device — masaMLP
   never changes convergence behavior per device. TPUs like large batches:
   for throughput on big data, set `batch_size` (and re-tune

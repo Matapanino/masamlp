@@ -190,7 +190,7 @@ def resolve_amp(
     ``False`` opts out entirely; a dict keys the policy by device type
     (retrieval models use ``{"cuda": False}`` — KI-010's autocast slowdown
     and fp16 accuracy risk are CUDA findings; on bf16-native TPUs bf16
-    matched fp32 exactly and ran 1.5-7x faster, measured on v5e);
+    trained moderately faster at equivalent rmse, measured on v5e);
     ``"bf16"`` accepts bf16 but not fp16 (ft_transformer: fp16 measured
     slower and less accurate on T4). An explicit ``amp=True`` still forces
     AMP on.

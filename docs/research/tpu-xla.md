@@ -158,11 +158,14 @@ study (Kalamkar et al. 2019 [19]).
    and the first CI suite because both were full-batch. Fix: on XLA the
    trainer transfers each permutation chunk separately (clean device-data
    nodes); a minibatch retrieval test now guards it in CI.
-2. **bf16 is the right default, and KI-010 is CUDA-scoped**: tabr @345k —
-   fp32 fit 153.1s / predict(50k) 49.2s vs bf16 fit 104.5s / predict 6.7s
-   with **identical rmse (0.1793)**. `amp_auto` became device-keyed
-   (`{"cuda": False}` on retrieval models). Across the matrix, bf16
-   predict times beat fp32 by 3-12x (XLA fp32 eval graphs are slow).
+2. **bf16 default, and KI-010 is CUDA-scoped** — *numbers corrected by
+   wave C*: wave B's "amp=auto" retrieval rows predated the device-keyed
+   policy and were actually fp32 reruns riding a warm compile cache (see
+   §9.1 — the benchmark-ordering trap). True cold-cache bf16 (wave C):
+   ModernNCA fit −28%, TabR@345k fit −9%, rmse equivalent; prediction is
+   amp-independent (autocast wraps the training step only). `amp_auto`
+   became device-keyed (`{"cuda": False}` on retrieval models) — still
+   the right call, on the corrected evidence.
 3. **openxla dynamo backend miscompiles training**: ft_transformer lazy
    49.2s / rmse 0.2012 vs `compile=True` 29.1s / **rmse 3.18**.
    `compile=True` on XLA now warns and stays lazy.
@@ -184,6 +187,32 @@ study (Kalamkar et al. 2019 [19]).
    FLOPs, is the tax at tabular batch sizes.
 6. In-process compile caching is real: repeat fits of the same config
    compile 0 times and run 2-3x faster than the first fit.
+
+## 9. Wave C findings (Kaggle v5e-8, 2026-07-10 — post-fix re-measurement)
+
+1. **The benchmark-ordering trap.** Same-process sequential runs share the
+   XLA compile cache, and fp32 *prediction* graphs are identical whatever
+   `amp` is — so any "amp=auto" row run after an fp32 row inherits warm
+   predict graphs (and, before the device-keyed policy landed, warm fit
+   graphs too, because retrieval "auto" still meant fp32). Wave B's
+   headline retrieval bf16 wins were this artifact; §8.2 is corrected.
+   Rule for future TPU verdicts: report cold-cache numbers, or randomize/
+   isolate run order per cell.
+2. **True bf16 (cold cache)**: modernnca 50k fit 35.5s vs fp32 49.1s
+   (−28%), rmse 0.6830 vs 0.6833; tabr 50k fit 41.0s vs 40.9s (nil),
+   345k fit 139.9s vs 153.1s (−9%), rmse equivalent. Policy unchanged
+   (bf16 on XLA), justification corrected.
+3. **The minibatch index fix holds on TPU**: modernnca trains through the
+   former SIGABRT path (§8.1) at 50k and 345k.
+4. **Batched eval transfers need per-chunk graph barriers on XLA**:
+   accumulating chunk outputs as pending lazy IR fused every eval chunk
+   into one program — ModernNCA's streamed eval at a 276k-candidate
+   corpus demanded 50.6 GiB of 15.75 GiB HBM (`RESOURCE_EXHAUSTED`,
+   measured). `predict_transformed` now cuts the graph per chunk and
+   still transfers once. (Wave D re-verifies 345k eval end to end.)
+5. batch 8192 rows keep showing the honest convergence cost (modernnca
+   rmse 0.68 → 2.05 at fixed epochs) — the device-independent batch
+   default (ADR 0002 §4) keeps protecting result quality.
 
 ## Sources
 
