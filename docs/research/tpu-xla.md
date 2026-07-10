@@ -213,6 +213,11 @@ study (Kalamkar et al. 2019 [19]).
 5. batch 8192 rows keep showing the honest convergence cost (modernnca
    rmse 0.68 → 2.05 at fixed epochs) — the device-independent batch
    default (ADR 0002 §4) keeps protecting result quality.
+6. **Wave D (per-cell cold processes) confirmed the barrier fix**:
+   modernnca 345k fit 71.3s / predict 20.4s with no OOM — the fit now
+   *beats* the L4's 81s. The barrier costs TabR's chunked eval its
+   cross-chunk fusion (predict 47.8s → 85.6s), accepted: correctness of
+   ModernNCA eval over speed of an already-documented slow path.
 
 ## Sources
 

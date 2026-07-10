@@ -1,0 +1,614 @@
+===================== WAVE a =====================
+# masaMLP TPU wave A report
+branch: v0.4.0-tpu; started 2026-07-10 17:07:47 UTC
+
+## Phase 0 — clean-process device enumeration
+
+- default env: `{"TPU_VISIBLE_CHIPS": "<unset>", "torch_xla": "2.8.0", "device_type": "TPU", "global_runtime_device_count": 8, "addressable_runtime_device_count": 8, "addressable_device_count": 8, "world_size": 1, "local_device_count": 8, "xla_supported_devices": ["xla:0", "xla:1", "xla:2", "xla:3", "xla:4", "xla:5", "xla:6", "xla:7"]}`
+- TPU_VISIBLE_CHIPS=0: `{"TPU_VISIBLE_CHIPS": "0", "torch_xla": "2.8.0", "device_type": "TPU", "global_runtime_device_count": 1, "addressable_runtime_device_count": 1, "addressable_device_count": 1, "world_size": 1, "local_device_count": 1, "xla_supported_devices": ["xla:0"]}`
+
+## Phase 1 — environment recon
+
+- python 3.12.13, torch 2.8.0+cpu
+- torch_xla 2.8.0, has sync: True, has manual_seed: True
+- cpu_count 224
+- env: `{"TPU_CHIPS_PER_HOST_BOUNDS": "2,4,1", "TPU_SKIP_MDS_QUERY": "1", "TPU_RUNTIME_METRICS_PORTS": "8431,8432,8433,8434,8435,8436,8437,8438", "TPU_WORKER_ID": "0", "PJRT_DEVICE": "TPU", "TPU_WORKER_HOSTNAMES": "localhost", "TPU_ACCELERATOR_TYPE": "v5litepod-8", "TPU_HOST_BOUNDS": "1,1,1", "TPU_PROCESS_ADDRESSES": "local", "TPU_ML_PLATFORM": "PyTorch/XLA", "TPU_ML_PLATFORM_VERSION": "2.8.0", "XLA_FLAGS": " --xla_cpu_enable_fast_math=false --xla_gpu_force_compilation_parallelism=8", "TPU_LIBRARY_PATH": "/usr/local/lib/python3.12/site-packages/libtpu/libtpu.so", "PJRT_DYNAMIC_PLUGINS": "1"}`
+
+## Phase 2 — install masamlp branch
+
+- pip rc=0
+- masamlp 0.3.0, backend=TPU
+- resolve_device('tpu') -> xla:0
+- resolve_device('auto') -> xla:0
+
+## Phase 3 — zoo on device='xla' (fp32) + CPU-load parity
+
+| model | fit s | predict s | compiles | max|xla-cpu| | aten fallbacks |
+|---|---|---|---|---|---|
+| resnet | 0.9 | 0.08 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| danet | 2.4 | 0.27 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| lnn | 0.8 | 0.11 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| realmlp | 0.3 | 0.07 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| tabr | 4.8 | 1.91 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| ft_transformer | 2.0 | 0.39 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| tab_transformer | 0.3 | 0.07 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| modernnca | 0.8 | 0.22 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| gandalf | 0.6 | 0.10 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+| grn | 0.8 | 0.11 | 3 | 0.00e+00 | aten::_local_scalar_dense=3 |
+
+## Phase 4 — scalar-lifting probe (per-step schedules vs compile count)
+
+- compiles/seconds at 2 epochs: (3, 0.9), at 8 epochs: (2, 1.0)
+- VERDICT: scalars are lifted (compile count stable) — no tensor-lr machinery needed
+
+## Phase 5 — bf16 teaser (resnet 50k x 32, batch 8192, 3 epochs)
+
+- amp=False: fit 17.3s (incl. compile), train rmse 1.3690
+- amp='auto': fit 22.0s (incl. compile), train rmse 1.3806
+
+WAVE A COMPLETE
+
+===================== WAVE b =====================
+# masaMLP TPU wave B report
+branch: v0.4.0-tpu; started 2026-07-10 19:09:40 UTC
+
+```
+$ git clone -b v0.4.0-tpu --depth 1 https://github.com/Matapanino/masamlp /kaggle/working/repo
+Cloning into '/kaggle/working/repo'...
+[rc=0]
+```
+
+```
+$ /usr/local/bin/python -m pip install --no-deps --force-reinstall --quiet /kaggle/working/repo
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.1.2
+[notice] To update, run: pip install --upgrade pip
+[rc=0]
+```
+
+## Section 1 — matrix (50k rows, verdict-comparable configs)
+
+```
+$ /usr/local/bin/python tpu_speed.py --skip-cpu
+/usr/local/lib/python3.12/site-packages/torch_xla/experimental/gru.py:113: SyntaxWarning: invalid escape sequence '\_'
+  * **h_n**: tensor of shape :math:`(D * \text{num\_layers}, H_{out})` or
+/usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+  warnings.warn(
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+WARNING: Logging before InitGoogle() is written to STDERR
+E0000 00:00:1783710621.054466      44 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+=== Source Location Trace: ===
+learning/45eac/tfrc/runtime/common_lib.cc:238
+resnet                       device=xla     amp=False fit    46.7s  predict(200000)   3.15s  rmse 0.2122
+                             [xla compiles=6 aten=aten::_local_scalar_dense=40]
+resnet                       device=xla     amp=auto  fit    34.8s  predict(200000)   0.80s  rmse 0.1901
+                             [xla compiles=4 aten=aten::_local_scalar_dense=40]
+resnet [batch 8192]          device=xla     amp=auto  fit    21.8s  predict(200000)   1.03s  rmse 0.2962
+                             [xla compiles=4 aten=aten::_local_scalar_dense=40]
+realmlp (TD-S recipe)        device=xla     amp=False fit    56.8s  predict(200000)   2.08s  rmse 0.1735
+                             [xla compiles=10 aten=aten::_local_scalar_dense=40]
+realmlp (TD-S recipe)        device=xla     amp=auto  fit    60.3s  predict(200000)   0.17s  rmse 0.1737
+                             [xla compiles=8 aten=aten::_local_scalar_dense=40]
+realmlp (TD-S recipe) [batch 8192] device=xla     amp=auto  fit    25.8s  predict(200000)   0.18s  rmse 0.2861
+                             [xla compiles=5 aten=aten::_local_scalar_dense=40]
+ft_transformer               device=xla     amp=False fit    35.2s  predict(200000)  10.73s  rmse 0.2927
+                             [xla compiles=6 aten=aten::_local_scalar_dense=20]
+ft_transformer               device=xla     amp=auto  fit    38.4s  predict(200000)   1.92s  rmse 0.2012
+                             [xla compiles=4 aten=aten::_local_scalar_dense=20]
+ft_transformer [batch 8192]  device=xla     amp=auto  fit    23.3s  predict(200000)   1.70s  rmse 0.5785
+                             [xla compiles=4 aten=aten::_local_scalar_dense=20]
+tabr                         device=xla     amp=False fit    40.9s  predict(200000)  28.82s  rmse 0.1952
+                             [xla compiles=6 aten=aten::_local_scalar_dense=20]
+tabr                         device=xla     amp=auto  fit    17.1s  predict(200000)   5.00s  rmse 0.1952
+                             [xla compiles=0 aten=aten::_local_scalar_dense=20]
+tabr [batch 8192]            device=xla     amp=auto  fit    42.8s  predict(200000)   5.03s  rmse 0.4395
+                             [xla compiles=4 aten=aten::_local_scalar_dense=20]
+tab_transformer              device=xla     amp=False fit    64.4s  predict(200000)  22.46s  rmse 0.8639
+                             [xla compiles=6 aten=aten::_local_scalar_dense=20]
+tab_transformer              device=xla     amp=auto  fit    69.0s  predict(200000)   2.62s  rmse 0.8215
+                             [xla compiles=4 aten=aten::_local_scalar_dense=20]
+tab_transformer [batch 8192] device=xla     amp=auto  fit    34.0s  predict(200000)   2.63s  rmse 0.9015
+                             [xla compiles=4 aten=aten::_local_scalar_dense=20]
+F0710 19:22:14.164375      44 shape.cc:166] Check failed: state Expected an array shape. Got (s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=5*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=10*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=15*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=20*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=25*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=30*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=35*/s64[1024], s64[1024], s64[1024], s64[1024], s64[64])
+This is a programmer error. Please read the Shape object's array properties (e.g. dimensions) only when it's an array shape.
+*** Check failure stack trace: ***
+    @     0x79b214f1d41f  absl::lts_20230802::log_internal::LogMessageFatal::~LogMessageFatal()
+    @     0x79b214cd813c  xla::Shape::array_state()
+    @     0x79b20dcafdc3  xla::Shape::dimensions()
+    @     0x79b20dcafde7  xla::Shape::dimensions_size()
+    @     0x79b20df70d59  torch_xla::EnsureRank1()
+    @     0x79b20df70f6b  torch_xla::(anonymous namespace)::IndexFillOp()
+    @     0x79b20df722dc  torch_xla::IndexFill()
+    @     0x79b20dd30c5c  torch_xla::tensor_methods::index_fill_()
+    @     0x79b20dc790bc  torch_xla::XLANativeFunctions::index_fill_()
+    @     0x79b373210fd3  at::_ops::index_fill__int_Scalar::call()
+    @     0x79b372adc0eb  at::native::index_fill()
+https://symbolize.stripped_domain/r/?trace=79b386e8195c,79b386e2cdef,79b214f1d0be,79b214f1d41e,79b214cd813b,79b20dcafdc2,79b20dcafde6,79b20df70d58,79b20df70f6a,79b20df722db,79b20dd30c5b,79b20dc790bb,79b373210fd2,79b372adc0ea&map=
+*** SIGABRT received by PID 44 (TID 44) on cpu 62 from PID 44; stack trace: ***
+PC: @     0x79b386e8195c  (unknown)  (unknown)
+    @     0x79ad7adb47e5       1904  (unknown)
+    @     0x79b386e2cdf0  (unknown)  (unknown)
+    @     0x79b214f1d0bf         32  absl::lts_20230802::log_internal::LogMessage::Die()
+    @     0x79b214f1d41f         16  absl::lts_20230802::log_internal::LogMessageFatal::~LogMessageFatal()
+    @     0x79b214cd813c        128  xla::Shape::array_state()
+    @     0x79b20dcafdc3         16  xla::Shape::dimensions()
+    @     0x79b20dcafde7         16  xla::Shape::dimensions_size()
+    @     0x79b20df70d59        528  torch_xla::EnsureRank1()
+    @     0x79b20df70f6b        368  torch_xla::(anonymous namespace)::IndexFillOp()
+    @     0x79b20df722dc        608  torch_xla::IndexFill()
+    @     0x79b20dd30c5c        464  torch_xla::tensor_methods::index_fill_()
+    @     0x79b20dc790bc        208  torch_xla::XLANativeFunctions::index_fill_()
+    @     0x79b373210fd3        240  at::_ops::index_fill__int_Scalar::call()
+    @     0x79b372adc0eb  (unknown)  at::native::index_fill()
+https://symbolize.stripped_domain/r/?trace=79b386e8195c,79ad7adb47e4,79b386e2cdef,79b214f1d0be,79b214f1d41e,79b214cd813b,79b20dcafdc2,79b20dcafde6,79b20df70d58,79b20df70f6a,79b20df722db,79b20dd30c5b,79b20dc790bb,79b373210fd2,79b372adc0ea&map=
+E0710 19:22:14.626396      44 coredump_hook.cc:301] RAW: Remote crash data gathering hook invoked.
+E0710 19:22:14.626413      44 client.cc:270] RAW: Coroner client retries enabled, will retry for up to 30 sec.
+E0710 19:22:14.626417      44 coredump_hook.cc:396] RAW: Sending fingerprint to remote end.
+E0710 19:22:14.626452      44 coredump_hook.cc:405] RAW: Cannot send fingerprint to Coroner: [NOT_FOUND] stat failed on crash reporting socket /var/google/services/logmanagerd/remote_coredump.socket (Is the listener running?): No such file or directory
+E0710 19:22:14.626456      44 coredump_hook.cc:457] RAW: Dumping core locally.
+E0710 19:22:40.905899      44 process_state.cc:808] RAW: Raising signal 6 with default behavior
+[rc=-6]
+```
+
+## Section 2 — retrieval at scale (345k rows, bf16 vs fp32)
+
+```
+$ /usr/local/bin/python tpu_speed.py --retrieval-scale
+/usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+  warnings.warn(
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+WARNING: Logging before InitGoogle() is written to STDERR
+E0000 00:00:1783711403.480576    1885 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+=== Source Location Trace: ===
+learning/45eac/tfrc/runtime/common_lib.cc:238
+tabr rows=345000             device=xla     amp=False fit   153.1s  predict(50000)  49.18s  rmse 0.1793
+                             [xla compiles=6 aten=aten::_local_scalar_dense=3]
+tabr rows=345000             device=xla     amp=auto  fit   104.5s  predict(50000)   6.68s  rmse 0.1793
+                             [xla compiles=0 aten=aten::_local_scalar_dense=3]
+F0710 19:29:47.415845    1885 shape.cc:166] Check failed: state Expected an array shape. Got (s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=5*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=10*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=15*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=20*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=25*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=30*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=35*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=40*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=45*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=50*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=55*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=60*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=65*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=70*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=75*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=80*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=85*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=90*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=95*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=100*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=105*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=110*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=115*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=120*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=125*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=130*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=135*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=140*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=145*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=150*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=155*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=160*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=165*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=170*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=175*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=180*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=185*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=190*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=195*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=200*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=205*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=210*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=215*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=220*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=225*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=230*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=235*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=240*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=245*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=250*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=255*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=260*/s64[1024], s64[1024], s64[1024], s64[1024], s64[1024], /*index=265*/s64[1024], s64[1024], s64[1024], s64[1024], s64[544])
+This is a programmer error. Please read the Shape object's array properties (e.g. dimensions) only when it's an array shape.
+*** Check failure stack trace: ***
+    @     0x78a71fb1d41f  absl::lts_20230802::log_internal::LogMessageFatal::~LogMessageFatal()
+    @     0x78a71f8d813c  xla::Shape::array_state()
+    @     0x78a7188afdc3  xla::Shape::dimensions()
+    @     0x78a7188afde7  xla::Shape::dimensions_size()
+    @     0x78a718b70d59  torch_xla::EnsureRank1()
+    @     0x78a718b70f6b  torch_xla::(anonymous namespace)::IndexFillOp()
+    @     0x78a718b722dc  torch_xla::IndexFill()
+    @     0x78a718930c5c  torch_xla::tensor_methods::index_fill_()
+    @     0x78a7188790bc  torch_xla::XLANativeFunctions::index_fill_()
+    @     0x78a87ce10fd3  at::_ops::index_fill__int_Scalar::call()
+    @     0x78a87c6dc0eb  at::native::index_fill()
+https://symbolize.stripped_domain/r/?trace=78a89095a95c,78a890905def,78a71fb1d0be,78a71fb1d41e,78a71f8d813b,78a7188afdc2,78a7188afde6,78a718b70d58,78a718b70f6a,78a718b722db,78a718930c5b,78a7188790bb,78a87ce10fd2,78a87c6dc0ea&map=
+*** SIGABRT received by PID 1885 (TID 1885) on cpu 32 from PID 1885; stack trace: ***
+PC: @     0x78a89095a95c  (unknown)  (unknown)
+    @     0x78a056db47e5       1904  (unknown)
+    @     0x78a890905df0  1623579424  (unknown)
+    @     0x78a71fb1d0bf         32  absl::lts_20230802::log_internal::LogMessage::Die()
+    @     0x78a71fb1d41f         16  absl::lts_20230802::log_internal::LogMessageFatal::~LogMessageFatal()
+    @     0x78a71f8d813c        128  xla::Shape::array_state()
+    @     0x78a7188afdc3         16  xla::Shape::dimensions()
+    @     0x78a7188afde7         16  xla::Shape::dimensions_size()
+    @     0x78a718b70d59        528  torch_xla::EnsureRank1()
+    @     0x78a718b70f6b        368  torch_xla::(anonymous namespace)::IndexFillOp()
+    @     0x78a718b722dc        608  torch_xla::IndexFill()
+    @     0x78a718930c5c        464  torch_xla::tensor_methods::index_fill_()
+    @     0x78a7188790bc        208  torch_xla::XLANativeFunctions::index_fill_()
+    @     0x78a87ce10fd3        240  at::_ops::index_fill__int_Scalar::call()
+    @     0x78a87c6dc0eb  (unknown)  at::native::index_fill()
+https://symbolize.stripped_domain/r/?trace=78a89095a95c,78a056db47e4,78a890905def,78a71fb1d0be,78a71fb1d41e,78a71f8d813b,78a7188afdc2,78a7188afde6,78a718b70d58,78a718b70f6a,78a718b722db,78a718930c5b,78a7188790bb,78a87ce10fd2,78a87c6dc0ea&map=
+E0710 19:29:47.872620    1885 coredump_hook.cc:301] RAW: Remote crash data gathering hook invoked.
+E0710 19:29:47.872637    1885 client.cc:270] RAW: Coroner client retries enabled, will retry for up to 30 sec.
+E0710 19:29:47.872641    1885 coredump_hook.cc:396] RAW: Sending fingerprint to remote end.
+E0710 19:29:47.872671    1885 coredump_hook.cc:405] RAW: Cannot send fingerprint to Coroner: [NOT_FOUND] stat failed on crash reporting socket /var/google/services/logmanagerd/remote_coredump.socket (Is the listener running?): No such file or directory
+E0710 19:29:47.872674    1885 coredump_hook.cc:457] RAW: Dumping core locally.
+[rc=-6]
+```
+
+## Section 3 — lazy vs openxla compile probe
+
+```
+$ /usr/local/bin/python tpu_speed.py --compile-probe
+/usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+  warnings.warn(
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+WARNING: Logging before InitGoogle() is written to STDERR
+E0000 00:00:1783713394.110730    3475 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+=== Source Location Trace: ===
+learning/45eac/tfrc/runtime/common_lib.cc:238
+ft_transformer [lazy]        device=xla     amp=auto  fit    49.2s  predict(200000)  11.09s  rmse 0.2012
+                             [xla compiles=6 aten=aten::_local_scalar_dense=20]
+ft_transformer [openxla]     device=xla     amp=auto  fit    29.1s  predict(200000)   1.75s  rmse 3.1822
+                             [xla compiles=19 aten=aten::_local_scalar_dense=20]
+[rc=0]
+```
+
+## Section 4 — host CPU context (resnet + realmlp only)
+
+```
+$ /usr/local/bin/python -c 
+import sys; sys.path.insert(0, '.')
+from gpu_speed import CONFIGS, make_data, run_one
+data = make_data(50_000, pred_rows=200_000)
+for name, kwargs, needs_cats in CONFIGS[:2]:
+    run_one(name, dict(kwargs), 'cpu', False, data)
+
+resnet                       device=cpu     amp=False fit   234.6s  predict(200000)   0.85s  rmse 0.2023
+realmlp (TD-S recipe)        device=cpu     amp=False fit    34.1s  predict(200000)   0.25s  rmse 0.1756
+[rc=0]
+```
+
+## Section 5 — thread-per-device concurrency probe (sharding go/no-go)
+
+```
+$ /usr/local/bin/python -c 
+import sys, threading, time
+sys.path.insert(0, '.')
+import numpy as np
+from gpu_speed import make_data
+from masamlp import MasaRegressor
+
+X, y = make_data(30_000, pred_rows=0)[:2]
+KW = dict(model='resnet', n_epochs=20, amp=False, verbose=0,
+          model_params={'d': 256, 'n_blocks': 2})
+
+def fit_on(dev, seed, out, i):
+    # NOTE: concurrent fits race on process-global seeding here; fine for a
+    # feasibility probe (the real sharding path would use seed_scope='device').
+    try:
+        m = MasaRegressor(device=dev, random_state=seed, **KW)
+        t0 = time.time(); m.fit(X, y); out[i] = (time.time() - t0, None)
+    except Exception as e:
+        out[i] = (None, f'{type(e).__name__}: {str(e)[:200]}')
+
+seq = [None, None]
+t0 = time.time()
+for i in range(2):
+    fit_on('xla:0', i, seq, i)
+seq_wall = time.time() - t0
+print(f'sequential on xla:0: {seq}, wall {seq_wall:.1f}s', flush=True)
+
+conc = [None, None, None, None]
+t0 = time.time()
+threads = [threading.Thread(target=fit_on, args=(f'xla:{i}', i, conc, i))
+           for i in range(4)]
+[t.start() for t in threads]; [t.join() for t in threads]
+conc_wall = time.time() - t0
+print(f'concurrent on xla:0-3: {conc}, wall {conc_wall:.1f}s', flush=True)
+errs = [c[1] for c in conc if c and c[1]]
+per_fit_seq = seq_wall / 2
+ideal = per_fit_seq  # 4 fits in parallel should take ~1 fit's time
+print(f'VERDICT: {"THREAD-SHARDING FEASIBLE" if not errs and conc_wall < 2.5 * per_fit_seq else "NOT CONFIRMED"} '
+      f'(4 concurrent fits wall {conc_wall:.1f}s vs single-fit {per_fit_seq:.1f}s)', flush=True)
+
+/usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+  warnings.warn(
+WARNING: Logging before InitGoogle() is written to STDERR
+E0000 00:00:1783713774.845066    5259 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+=== Source Location Trace: ===
+learning/45eac/tfrc/runtime/common_lib.cc:238
+sequential on xla:0: [(23.32195520401001, None), (6.725402355194092, None)], wall 30.0s
+concurrent on xla:0-3: [(None, 'RuntimeError: torch_xla/csrc/tensor.cpp:191 : Check failed: data()->tensor_data \n*** Begin stack trace ***\n\ttsl::CurrentStackTrace[abi:cxx11]()\n\ttorch_xla::XLATensor::shape() const\n\ttorch_xla::XLATensorImpl::SetupS'), (3784.822208404541, None), (None, 'RuntimeError: torch_xla/csrc/xla_graph_executor.cpp:691 : Check failed: tensor_data \n*** Begin stack trace ***\n\ttsl::CurrentStackTrace[abi:cxx11]()\n\ttorch_xla::XLAGraphExecutor::CollectSyncTensors(std::vector<c10::'), (None, 'RuntimeError: torch_xla/csrc/xla_graph_executor.cpp:691 : Check failed: tensor_data \n*** Begin stack trace ***\n\ttsl::CurrentStackTrace[abi:cxx11]()\n\ttorch_xla::XLAGraphExecutor::CollectSyncTensors(std::vector<c10::')], wall 3785.0s
+VERDICT: NOT CONFIRMED (4 concurrent fits wall 3785.0s vs single-fit 15.0s)
+[rc=0]
+```
+
+WAVE B COMPLETE
+
+===================== WAVE c =====================
+# masaMLP TPU wave C report
+branch: v0.4.0-tpu; started 2026-07-10 22:18:01 UTC
+
+```
+$ git clone -b ...
+Cloning into '/kaggle/working/repo'...
+[rc=0]
+```
+
+```
+$ /usr/local/bin/python -m pip ...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.1.2
+[notice] To update, run: pip install --upgrade pip
+[rc=0]
+```
+
+## modernnca matrix cells (50k, minibatch — the wave-B crash path)
+## + amp='auto' now resolving bf16 on retrieval, and 345k scale
+
+```
+$ /usr/local/bin/python -c 
+import sys, time
+sys.path.insert(0, '.')
+import torch, torch_xla
+from gpu_speed import CONFIGS, make_data, run_one
+from tpu_speed import run_xla
+from masamlp.core.device import xla_backend_type
+print(f'torch {torch.__version__}  torch_xla {torch_xla.__version__}  backend={xla_backend_type()}', flush=True)
+
+data = make_data(50_000, pred_rows=200_000)
+name, kwargs, _ = next(c for c in CONFIGS if c[0] == 'modernnca')
+run_xla(name, kwargs, False, data)
+run_xla(name, kwargs, 'auto', data)            # amp_auto dict -> bf16 now
+run_xla(name, kwargs, 'auto', data, label='modernnca [batch 8192]', batch_size=8192)
+
+# tabr amp='auto' should now equal wave B's explicit-bf16 numbers
+tname, tkwargs, _ = next(c for c in CONFIGS if c[0] == 'tabr')
+run_xla(tname, tkwargs, 'auto', data, label='tabr [auto->bf16]')
+
+# 345k scale, both retrieval models, amp='auto'
+big = make_data(345_000, pred_rows=50_000)
+for m in ('tabr', 'modernnca'):
+    run_xla(m, {'model': m, 'n_epochs': 3}, 'auto', big, label=f'{m} rows=345000')
+ ...
+/usr/local/lib/python3.12/site-packages/torch_xla/experimental/gru.py:113: SyntaxWarning: invalid escape sequence '\_'
+  * **h_n**: tensor of shape :math:`(D * \text{num\_layers}, H_{out})` or
+/usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+  warnings.warn(
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+WARNING: Logging before InitGoogle() is written to STDERR
+E0000 00:00:1783721922.264674      44 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+=== Source Location Trace: ===
+learning/45eac/tfrc/runtime/common_lib.cc:238
+modernnca                    device=xla     amp=False fit    49.1s  predict(200000)   7.92s  rmse 0.6833
+                             [xla compiles=6 aten=aten::_local_scalar_dense=20]
+modernnca                    device=xla     amp=auto  fit    35.5s  predict(200000)   1.16s  rmse 0.6830
+                             [xla compiles=4 aten=aten::_local_scalar_dense=20]
+modernnca [batch 8192]       device=xla     amp=auto  fit    34.4s  predict(200000)   1.06s  rmse 2.0537
+                             [xla compiles=4 aten=aten::_local_scalar_dense=20]
+tabr [auto->bf16]            device=xla     amp=auto  fit    41.0s  predict(200000)  28.32s  rmse 0.1764
+                             [xla compiles=6 aten=aten::_local_scalar_dense=20]
+tabr rows=345000             device=xla     amp=auto  fit   139.9s  predict(50000)  47.78s  rmse 0.1816
+                             [xla compiles=6 aten=aten::_local_scalar_dense=3]
+Traceback (most recent call last):
+  File "<string>", line 23, in <module>
+  File "/kaggle/working/repo/benchmarks/tpu_speed.py", line 42, in run_xla
+    out = run_one(name, dict(kwargs, **overrides), "xla", amp, data, label=label)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/repo/benchmarks/gpu_speed.py", line 75, in run_one
+    pred = est.predict(X_eval)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/masamlp/regressor.py", line 162, in predict
+    pred = self._predict_transformed(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/masamlp/sklearn.py", line 439, in _predict_transformed
+    predict_transformed(
+  File "/usr/local/lib/python3.12/site-packages/masamlp/core/trainer.py", line 137, in predict_transformed
+    pred = torch.cat(outs).cpu().numpy()
+           ^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: XLA:TPU compile permanent error. Ran out of memory in memory space hbm. Used 50.60G of 15.75G hbm. Exceeded hbm capacity by 34.85G.
+
+Total hbm usage >= 50.85G:
+    reserved        258.00M
+    program          50.60G
+    arguments            0B
+
+Output size 0B; shares 0B with arguments.
+
+Program hbm requirement 50.60G:
+    global           176.0K
+    HLO temp         50.60G (100.0% utilization: Unpadded (50.55G) Padded (50.55G), 0.1% fragmentation (47.04M))
+
+  Largest program allocations in hbm:
+
+  1. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1453.remat2 = fusion(copy.22, broadcast.28041, bitcast.6, custom-call.238, ...(+2)), kind=kOutput, calls=fused_computation.2394.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  2. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1326.remat3 = fusion(copy.22, broadcast.28041, bitcast.1035, custom-call.83, ...(+2)), kind=kOutput, calls=fused_computation.2267.clone.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  3. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1454.remat2 = fusion(copy.22, broadcast.28041, bitcast.980, custom-call.78, ...(+2)), kind=kOutput, calls=fused_computation.2395.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  4. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1481.remat2 = fusion(copy.22, broadcast.28041, bitcast.30, custom-call.200, ...(+2)), kind=kOutput, calls=fused_computation.2422.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  5. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1324.remat3 = fusion(copy.22, broadcast.28041, bitcast.1019, custom-call.62, ...(+2)), kind=kOutput, calls=fused_computation.2265.clone.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  6. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1355.remat2 = fusion(copy.22, broadcast.28041, bitcast.999, custom-call.45, ...(+2)), kind=kOutput, calls=fused_computation.2296.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  7. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1456.remat2 = fusion(copy.22, broadcast.28041, bitcast.988, custom-call.35, ...(+2)), kind=kOutput, calls=fused_computation.2397.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  8. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1357.remat2 = fusion(copy.22, broadcast.28041, bitcast.1015, custom-call.59, ...(+2)), kind=kOutput, calls=fused_computation.2298.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  9. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1457.remat2 = fusion(copy.22, broadcast.28041, bitcast.996, custom-call.42, ...(+2)), kind=kOutput, calls=fused_computation.2398.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  10. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1359.remat2 = fusion(copy.22, broadcast.28041, bitcast.1031, custom-call.73, ...(+2)), kind=kOutput, calls=fused_computation.2300.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  11. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1458.remat2 = fusion(copy.22, broadcast.28041, bitcast.1004, custom-call.49, ...(+2)), kind=kOutput, calls=fused_computation.2399.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  12. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1361.remat2 = fusion(copy.22, broadcast.28041, bitcast.1047, custom-call.94, ...(+2)), kind=kOutput, calls=fused_computation.2302.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  13. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1459.remat2 = fusion(copy.22, broadcast.28041, bitcast.1012, custom-call.56, ...(+2)), kind=kOutput, calls=fused_computation.2400.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  14. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1325.remat3 = fusion(copy.22, broadcast.28041, bitcast.1027, custom-call.69, ...(+2)), kind=kOutput, calls=fused_computation.2266.clone.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  15. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1461.remat2 = fusion(copy.22, broadcast.28041, bitcast.1028, custom-call.70, ...(+2)), kind=kOutput, calls=fused_computation.2402.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  16. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1365.remat2 = fusion(copy.22, broadcast.28041, bitcast.1079, custom-call.120, ...(+2)), kind=kOutput, calls=fused_computation.2306.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  17. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1462.remat2 = fusion(copy.22, broadcast.28041, bitcast.1036, custom-call.84, ...(+2)), kind=kOutput, calls=fused_computation.2403.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  18. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1367.remat2 = fusion(copy.22, broadcast.28041, bitcast.1095, custom-call.132, ...(+2)), kind=kOutput, calls=fused_computation.2308.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  19. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1463.remat2 = fusion(copy.22, broadcast.28041, bitcast.1044, custom-call.91, ...(+2)), kind=kOutput, calls=fused_computation.2404.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+  20. Size: 256.00M
+     Shape: f32[8192,8192]{0,1:T(8,128)}
+     Unpadded size: 256.00M
+     XLA label: fusion.1369.remat2 = fusion(copy.22, broadcast.28041, bitcast.1111, custom-call.144, ...(+2)), kind=kOutput, calls=fused_computation.2310.clone.clone
+     Allocation type: HLO temp
+     ==========================
+
+
+[rc=1]
+```
+
+WAVE C COMPLETE
+
+===================== WAVE d =====================
+# masaMLP TPU wave D report
+branch: v0.4.0-tpu; started 2026-07-10 23:02:18 UTC
+
+```
+$ git clone -b ...
+Cloning into '/kaggle/working/repo'...
+[rc=0]
+```
+
+```
+$ /usr/local/bin/python -m pip ...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.1.2
+[notice] To update, run: pip install --upgrade pip
+[rc=0]
+```
+
+## 345k retrieval, cold cache per process, amp='auto' (bf16)
+
+```
+$ /usr/local/bin/python -c 
+import sys
+sys.path.insert(0, '.')
+import torch, torch_xla
+from gpu_speed import make_data
+from tpu_speed import run_xla
+print(f'torch_xla {torch_xla.__version__}', flush=True)
+big = make_data(345_000, pred_rows=50_000)
+run_xla('modernnca', {'model': 'modernnca', 'n_epochs': 3}, 'auto', big,
+        label='modernnca rows=345000')
+ ...
+/usr/local/lib/python3.12/site-packages/torch_xla/experimental/gru.py:113: SyntaxWarning: invalid escape sequence '\_'
+  * **h_n**: tensor of shape :math:`(D * \text{num\_layers}, H_{out})` or
+/usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+  warnings.warn(
+torch_xla 2.8.0
+WARNING: Logging before InitGoogle() is written to STDERR
+E0000 00:00:1783724576.089327      44 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+=== Source Location Trace: ===
+learning/45eac/tfrc/runtime/common_lib.cc:238
+modernnca rows=345000        device=xla     amp=auto  fit    71.3s  predict(50000)  20.40s  rmse 0.6547
+                             [xla compiles=22 aten=aten::_local_scalar_dense=3]
+[rc=0]
+```
+
+```
+$ /usr/local/bin/python -c 
+import sys
+sys.path.insert(0, '.')
+import torch, torch_xla
+from gpu_speed import make_data
+from tpu_speed import run_xla
+print(f'torch_xla {torch_xla.__version__}', flush=True)
+big = make_data(345_000, pred_rows=50_000)
+run_xla('tabr', {'model': 'tabr', 'n_epochs': 3}, 'auto', big,
+        label='tabr rows=345000')
+ ...
+/usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+  warnings.warn(
+torch_xla 2.8.0
+WARNING: Logging before InitGoogle() is written to STDERR
+E0000 00:00:1783724704.663407    1552 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+=== Source Location Trace: ===
+learning/45eac/tfrc/runtime/common_lib.cc:238
+tabr rows=345000             device=xla     amp=auto  fit   152.0s  predict(50000)  85.57s  rmse 0.1816
+                             [xla compiles=22 aten=aten::_local_scalar_dense=3]
+[rc=0]
+```
+
+WAVE D COMPLETE
+
