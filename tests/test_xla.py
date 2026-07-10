@@ -93,8 +93,8 @@ def test_custom_objective_xla(reg_data):
     X, y, X_test, y_test = reg_data
 
     def pseudo_huber(y_true: torch.Tensor, raw: torch.Tensor) -> torch.Tensor:
-        err = raw[:, 0] - y_true
-        return torch.sqrt(1.0 + err * err) - 1.0
+        err = raw - y_true
+        return (torch.sqrt(1.0 + err * err) - 1.0).mean(dim=1)
 
     m = _regressor(objective=pseudo_huber, n_epochs=30).fit(X, y)
     pred = m.predict(X_test)

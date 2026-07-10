@@ -125,7 +125,11 @@ def predict_transformed(
     model.eval()
     outs: list[Tensor] = []
     device = data.x_num.device
-    with torch.inference_mode():
+    # inference_mode tensors break XLA's lazy tracing ("Cannot set
+    # version_counter for inference tensor"); no_grad is the XLA-safe
+    # equivalent and passes the retrieval models' eval-cache gate too.
+    no_autograd = torch.no_grad() if device.type == "xla" else torch.inference_mode()
+    with no_autograd:
         for start in range(0, len(data), batch_size):
             idx = torch.arange(start, min(start + batch_size, len(data)), device=device)
             batch = data.slice(idx)
