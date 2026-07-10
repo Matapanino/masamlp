@@ -34,3 +34,21 @@ jobs:
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e ".[dev]"
       - run: python -m pytest tests/ -q
+
+  # The XLA code path without TPU hardware: torch_xla's PJRT CPU backend
+  # compiles and runs the same graphs a TPU would. The torch/torch_xla pair
+  # is pinned here, not in pyproject — they are strictly version-coupled and
+  # must never constrain library users (see ADR 0002).
+  xla-smoke:
+    runs-on: ubuntu-latest
+    env:
+      PJRT_DEVICE: CPU
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install torch==2.8.* --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install torch_xla==2.8.*
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest tests/test_xla.py tests/test_device.py -q

@@ -98,11 +98,14 @@ class ModernNCA(RetrievalBase):
         batch_idx = self.current_batch_indices
         if not self.training or batch_idx is None:
             return torch.arange(n, device=device)
-        pool_mask = torch.ones(n, dtype=torch.bool, device=device)
-        pool_mask[batch_idx] = False
-        pool = pool_mask.nonzero(as_tuple=True)[0]
-        k = int(pool.shape[0] * self.sample_rate)
-        sampled = pool[torch.randperm(pool.shape[0], device=device)[:k]]
+        # Sample k non-batch rows via random keys + smallest-k: every shape
+        # here is a function of (n, batch size) only. Materializing the pool
+        # with nonzero()/randperm(pool) has data-dependent sizes — a
+        # recompile per batch on XLA. Batch rows get key 2.0, above any
+        # rand() draw, so they can never be selected (k <= n - B).
+        keys = torch.rand(n, device=device).index_fill(0, batch_idx, 2.0)
+        k = int((n - batch_idx.shape[0]) * self.sample_rate)
+        sampled = keys.topk(k, largest=False).indices
         return torch.cat([batch_idx, sampled])
 
     def _label_repr(self, y: Tensor, dtype: torch.dtype) -> Tensor:

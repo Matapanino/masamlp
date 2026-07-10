@@ -1,7 +1,9 @@
-# Devices: CPU, CUDA (single and multi-GPU), MPS
+# Devices: CPU, CUDA (single and multi-GPU), MPS, TPU/XLA (experimental)
 
-`device="auto"` resolves **cuda > mps > cpu**. Everything below is handled
-by `core/trainer.py` + `core/device.py` + `core/parallel.py`; models never
+`device="auto"` resolves **tpu > cuda > mps > cpu** (TPU only when
+torch_xla is installed *and* the environment carries TPU markers, so
+non-TPU machines pay nothing). Everything below is handled by
+`core/trainer.py` + `core/device.py` + `core/parallel.py`; models never
 contain device logic.
 
 ## Shared fast path
@@ -52,6 +54,44 @@ DataParallel-style scatter/gather to pay off.
   `nn.Module`s fall back to the sequential loop (their modules are shared
   across members). Custom objectives/metrics must be thread-safe to train
   sharded — the built-ins are.
+
+## TPU / XLA (experimental)
+
+Requires `torch_xla` (not a masamlp extra — its version is strictly coupled
+to torch's, minor for minor; install the pair your platform documents, e.g.
+`pip install torch~=2.8.0 torch_xla~=2.8.0` on a Cloud/Kaggle TPU VM).
+Design record: ADR 0002/0003; survey: [research/tpu-xla.md](research/tpu-xla.md).
+
+- `device="tpu"` asserts the XLA backend really is a TPU (fail-fast instead
+  of silently training on CPU); `device="xla"` accepts any PJRT backend —
+  `PJRT_DEVICE=CPU` runs the identical code path hardware-free and is what
+  CI uses (`xla-smoke` job).
+- Training runs in torch_xla's default lazy-tensor mode with one graph
+  barrier per optimizer step. The index-slice batching produces a fixed
+  two-shape set per fit (`batch_size`, `n % batch_size`), so everything
+  compiles once and replays. `compile=True` switches to
+  `torch.compile(backend="openxla")` instead (experimental).
+- `amp="auto"` means **bf16 autocast** (TPUs are bf16-native; no GradScaler
+  exists on this path). Per-model `amp_auto` policies apply as on CUDA.
+  fp16 is never used on TPU.
+- `batch_size="auto"` resolves exactly as on every other device — masaMLP
+  never changes convergence behavior per device. TPUs like large batches:
+  for throughput on big data, set `batch_size` (and re-tune
+  `learning_rate`) explicitly.
+- All ten models train and predict on XLA. Speed targets and measurements
+  cover the matmul-heavy six (resnet, realmlp, ft_transformer,
+  tab_transformer, tabr, modernnca) — see `docs/verdicts/`. The
+  entmax/sort-based models (danet, gandalf, grn) and lnn work but are not
+  tuned for TPU.
+- `ens_mode="vectorized"` raises on XLA (torch.func vmap over lazy tensors
+  is unvalidated); loop-mode `n_ens` works normally on the single device.
+- Multi-core TPUs (e.g. a v3-8's 8 cores): PJRT limits one process to one
+  chip, so in-library member sharding is deferred (roadmap). To use the
+  whole board today, run one process per chip yourself:
+  `TPU_VISIBLE_CHIPS=0 python fit_a.py & TPU_VISIBLE_CHIPS=1 python fit_b.py & ...`
+- Reproducibility: same seed + same device ⇒ same result holds on XLA (the
+  XLA device RNG is seeded from `random_state`); XLA vs CUDA/CPU results
+  are close, not bitwise — the existing cross-device rule.
 
 ## MPS (Apple Silicon)
 

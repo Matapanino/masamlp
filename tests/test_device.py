@@ -1,3 +1,5 @@
+import importlib.util
+
 import numpy as np
 import pytest
 import torch
@@ -8,6 +10,7 @@ from masamlp.regressor import MasaRegressor
 _KW = dict(n_epochs=10, random_state=0, model_params={"d": 32, "n_blocks": 1})
 
 cuda_available = torch.cuda.is_available()
+xla_available = importlib.util.find_spec("torch_xla") is not None
 # Functional probe, not is_available(): virtualized macOS CI runners report
 # MPS as available but fail on the first allocation.
 mps_available = mps_functional()
@@ -18,7 +21,14 @@ def test_resolve_device_auto_and_validation():
     assert dev.type in ("cuda", "mps", "cpu")
     assert resolve_device("cpu").type == "cpu"
     with pytest.raises(ValueError, match="Unknown device"):
-        resolve_device("tpu")
+        resolve_device("gpu")
+    if not xla_available:
+        # "xla"/"tpu" are known vocabulary; without torch_xla they fail with
+        # an install hint rather than an unknown-device error.
+        with pytest.raises(RuntimeError, match="torch_xla"):
+            resolve_device("xla")
+        with pytest.raises(RuntimeError, match="torch_xla"):
+            resolve_device("tpu")
     if not cuda_available:
         with pytest.raises(RuntimeError, match="CUDA"):
             resolve_device("cuda")

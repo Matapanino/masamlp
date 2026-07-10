@@ -1,0 +1,153 @@
+# TPU / torch_xla research notes (2026-07)
+
+Survey backing ADR 0002 (TPU support) and ADR 0003 (XLA execution
+strategy). Conclusions only in `docs/devices.md`; sources at the bottom.
+Items still marked *(wave A)* are confirmed empirically in the first
+Kaggle TPU session and this file is updated with the findings.
+
+## 1. torch_xla state of the world
+
+- Current stable is **torch_xla 2.8.0** (nightlies 2.9), wheels for
+  Python 3.10–3.13, strictly minor-version-paired with torch. [1][2]
+- **TorchTPU** (announced April 2026, in preview) is Google's successor
+  to PyTorch/XLA — "once public it will replace PyTorch/XLA", with a
+  public repo planned through 2026. [3][4] Consequence for masaMLP: ship
+  0.4.0 on torch_xla (the only GA path), and keep the integration surface
+  small — a handful of `device.type == "xla"` gates in `core/` — so a
+  later TorchTPU migration is contained. Its stated focus (fewer
+  recompilations from dynamic shapes, precompiled kernels) validates the
+  static-shape work in ADR 0003 rather than replacing it.
+- Execution modes: **lazy tensor tracing is still the default**; eager
+  mode (`torch_xla.experimental.eager_mode(True)`) plus
+  `torch_xla.compile` is usability-focused and experimental; long term,
+  `torch.compile` is intended as the single compile API. [5][6]
+  masaMLP v1 therefore uses **lazy mode + one `torch_xla.sync()` per
+  optimizer step**, and maps the existing `compile=True` flag to
+  `torch.compile(backend="openxla")` as the experimental alternative.
+  `torch_xla.sync()` is the modern name for the step barrier
+  (`xm.mark_step` is the legacy spelling — keep a shim if Kaggle's image
+  ships an older torch_xla, see §6). [7]
+
+## 2. Recompilation: the failure mode that matters
+
+XLA compiles one executable per (graph, input shapes) signature;"graph
+compilations in XLA are pretty expensive". Documented recompile sources
+[8] map 1:1 onto the masaMLP audit in ADR 0003:
+
+| Source (docs) | masaMLP instance | Fix |
+|---|---|---|
+| Input shape variation | last train/eval batch (`n % batch_size`) | none needed — a finite 2-shape set, compiled once each |
+| Data-dependent output shapes (`nonzero` etc.) | `tabr.py:136`, `modernnca.py:103` | static-shape mask rewrites (ADR 0003 §2) |
+| Python scalars baked as graph constants | per-step lr (`coslog4`), flat_cos weight decay, `ScheduledDropout` p | tensor-valued schedules; wrapping lr in a Tensor is the same fix the official `torch.compile` optimizer recipe prescribes [9] |
+| Host round-trips (`.item()`, `.size()` on dynamic tensors) | per-chunk `.cpu()` in eval; epoch-loss `float()` | keep the single per-epoch sync; batch eval transfers |
+
+Debugging workflow: `torch_xla.debug.metrics` —
+`met.metrics_report()` / counters (CompileTime, TransferFromDeviceTime,
+`aten::*` fallback counters). Every TPU verdict run records this per
+model; acceptance is *zero unexpected recompiles and zero aten fallbacks
+on the hot path*, not just wall-clock. [10]
+
+## 3. PJRT topology on TPU v3-8: sharding verdict
+
+From the PJRT runtime docs [11]:
+
+- v2/v3: "distributed workloads always run multithreaded … only one
+  process may open a TPU chip at a time"; default topology on a v3-8
+  host is **4 processes × 2 threads** (one thread per core).
+- **A single process cannot address all 8 cores** — one process opens at
+  most one chip (2 cores). `TPU_PROCESS_BOUNDS` / `TPU_VISIBLE_CHIPS`
+  select chips per process.
+- The global torch RNG is not thread-safe across replica threads — the
+  same constraint `core/parallel.py` already handles with
+  `seed_scope="device"`.
+
+Consequences (resolves ADR 0002 §1's condition):
+
+- **Full 8-core member sharding inside one `fit()` is impossible without
+  multiprocessing** → deferred to 0.5.0, as pre-agreed.
+- Thread-per-device *within* one chip (2 cores) is PJRT's native mode, so
+  a 2-way in-process shard is technically open — but using 2 of 8 cores
+  is not a compelling ship. *(wave A: probe what a single Kaggle process
+  actually enumerates.)*
+- The honest full-machine story for 0.4.0 is a **documented recipe**:
+  run one Python process per chip with `TPU_VISIBLE_CHIPS=<i>`
+  (user-orchestrated HPO/ensembling, e.g. 4 concurrent fits), which uses
+  the whole board without any library multiprocessing.
+
+## 4. Mixed precision on TPU
+
+- `torch.autocast("xla", dtype=torch.bfloat16)` is the sanctioned form —
+  the trainer's existing `torch.autocast(device.type, ...)` is already
+  correct on an `xla` device. [12]
+- "Since TPUs use bfloat16 mixed precision, gradient scaling is not
+  necessary" — no GradScaler on XLA, ever (fp16 is not offered). [12]
+- `torch_xla.amp.syncfree` optimizers exist to remove device–host syncs
+  in scaler-style flows; with bf16 (no scaler) they are an optimization
+  to *measure*, not a requirement. *(wave B: AdamW vs syncfree.AdamW.)*
+- `XLA_USE_BF16=1` (global fp32→bf16 rewrite) is legacy/deprecated in
+  ecosystem guidance and would corrupt loss/metric precision — rejected
+  in ADR 0002 §5. [13]
+
+## 5. Hardware background (why the T4 baseline is the right bar)
+
+TPU v3-8 = 4 chips × 2 cores; ~420 bf16 TFLOPS per 4-chip board
+(~50–60 TFLOPS per core), 32 GiB HBM per chip, one 128×128 bf16 MXU per
+core (16K MACs/cycle). [14][15] A single v3 core is therefore
+**T4-class** (T4 ≈ 65 fp16 TFLOPS) and well under an L4 — hence the
+success criterion "≥ T4 parity per core on the matmul-heavy six", and
+hence why bf16 (MXU-native) is the default and fp32-only TPU support
+would be pointless. Background papers: the original TPU analysis
+(Jouppi et al. 2017 [16]), the v2/v3 design retrospective (Norrie et
+al. 2021 [17]), TPU v4 (Jouppi et al. 2023 [18]), and the bf16 training
+study (Kalamkar et al. 2019 [19]).
+
+## 6. Kaggle TPU environment (experiment vehicle)
+
+- Kernel accelerator `Tpu1VmV38` = TPU VM v3-8, free weekly quota
+  separate from the 30 h/week GPU quota; batch sessions cap at ~9 h.
+- pytorch/xla's own Kaggle notebooks historically note "preinstalled
+  Python 3.10 and PT/XLA 2.1" [20] — the image may lag far behind 2.8.
+  *(wave A: probe `torch.__version__`/`torch_xla.__version__` first;
+  then either (a) run against the preinstalled pair with an
+  `xm.mark_step` shim, or (b) pip-install a matched modern
+  torch/torch_xla pair in the kernel — decide on the probe results,
+  prefer (b) only if (a)'s version is too old for `torch.autocast("xla")`.)*
+- No tabular DL library advertises first-class TPU support today
+  (pytorch_tabular inherits at most nominal Lightning TPU strategies;
+  pytabkit is CPU/CUDA) — the feature is a real differentiator.
+
+## 7. Wave A probe list (updates this file)
+
+1. Preinstalled torch/torch_xla versions; `torch_xla.sync` availability.
+2. Device enumeration from a single process (how many `xla` devices
+   visible; behavior with `TPU_VISIBLE_CHIPS`).
+3. `torch.autocast("xla", bf16)` works on the image's version.
+4. Tensor-lr AdamW (and `capturable` requirement, if any) on XLA —
+   verified first on XLA:CPU locally/CI, re-verified on TPU.
+5. Per-model `met.metrics_report()`: recompile/fallback counts for the
+   tiny zoo; identify any op falling back to CPU (aten counters).
+6. bf16 autocast effect on retrieval models' accuracy/speed (KI-010
+   re-measured on TPU).
+
+## Sources
+
+1. https://github.com/pytorch/xla/releases
+2. https://pypi.org/project/torch-xla/
+3. https://developers.googleblog.com/torchtpu-running-pytorch-natively-on-tpus-at-google-scale/
+4. https://techinformed.com/google-moves-to-make-tpus-feel-native-to-pytorch-as-it-targets-nvidias-cuda-advantage/
+5. https://docs.pytorch.org/xla/master/learn/eager.html
+6. https://github.com/pytorch/xla/issues/7253
+7. https://docs.pytorch.org/xla/master/learn/migration-to-xla-on-tpus.html
+8. https://docs.pytorch.org/xla/release/r2.7/perf/recompilation.html
+9. https://docs.pytorch.org/tutorials/recipes/compiling_optimizer_lr_scheduler.html
+10. https://docs.pytorch.org/xla/master/learn/troubleshoot.html
+11. https://docs.pytorch.org/xla/master/runtime.html
+12. https://docs.pytorch.org/xla/master/perf/amp.html
+13. https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/appnotes/torch-neuronx/migration-from-xla-downcast-bf16.html
+14. https://docs.cloud.google.com/tpu/docs/v3
+15. https://jax-ml.github.io/scaling-book/tpus/
+16. Jouppi et al., "In-Datacenter Performance Analysis of a Tensor Processing Unit", ISCA 2017. https://arxiv.org/abs/1704.04760
+17. Norrie et al., "The Design Process for Google's Training Chips: TPUv2 and TPUv3", IEEE Micro 2021.
+18. Jouppi et al., "TPU v4: An Optically Reconfigurable Supercomputer for Machine Learning", ISCA 2023. https://arxiv.org/abs/2304.01433
+19. Kalamkar et al., "A Study of BFLOAT16 for Deep Learning Training", 2019. https://arxiv.org/abs/1905.12322
+20. https://github.com/pytorch/xla/blob/master/contrib/kaggle/distributed-pytorch-xla-basics-with-pjrt.ipynb

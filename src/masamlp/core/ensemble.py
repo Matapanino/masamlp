@@ -87,6 +87,13 @@ def fit_vectorized(
     if config.compile:
         warnings.warn("torch.compile is ignored for vectorized ensembles", stacklevel=2)
     device = resolve_device(config.device)
+    if device.type == "xla":
+        # torch.func vmap over XLA lazy tensors is unvalidated; failing loud
+        # beats silently falling back to the loop mode the user didn't ask for.
+        raise ValueError(
+            "ens_mode='vectorized' is not supported on XLA devices; "
+            "use the default loop mode"
+        )
     if device.type == "cpu":
         set_threads(config.n_threads)
     if resolve_amp(config.amp, device, models[0])[0]:

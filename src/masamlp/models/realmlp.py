@@ -68,17 +68,27 @@ class ParametricActivation(nn.Module):
 
 class ScheduledDropout(nn.Module):
     """Dropout whose probability is scaled by a factor the trainer updates
-    per step (RealMLP-TD's flat_cos dropout schedule)."""
+    per step (RealMLP-TD's flat_cos dropout schedule).
+
+    The probability lives in a 0-dim buffer (non-persistent — absent from
+    state_dicts, moves with ``.to()``): ``F.dropout`` takes ``p`` as an op
+    attribute, so a per-step Python float would bake a new constant into
+    every compiled XLA graph and recompile every step; a tensor operand
+    keeps one graph on every device."""
 
     def __init__(self, p: float) -> None:
         super().__init__()
         self.base_p = p
-        self.p_factor = 1.0
+        self.register_buffer("_keep", torch.tensor(1.0 - p), persistent=False)
+
+    def set_factor(self, factor: float) -> None:
+        self._keep.fill_(1.0 - self.base_p * factor)
 
     def forward(self, x: Tensor) -> Tensor:
-        return torch.nn.functional.dropout(
-            x, self.base_p * self.p_factor, training=self.training
-        )
+        if not self.training:
+            return x
+        keep = self._keep.to(x.dtype)
+        return x * (torch.rand_like(x) < keep) / keep
 
 
 class RealMLPNet(nn.Module):
@@ -126,7 +136,7 @@ class RealMLPNet(nn.Module):
             factor = flat_cos(t)
             for module in self.modules():
                 if isinstance(module, ScheduledDropout):
-                    module.p_factor = factor
+                    module.set_factor(factor)
 
     def forward(self, x_num: Tensor, x_cat: Tensor) -> Tensor:
         return self.output_layer(self.trunk(self.embedding(x_num, x_cat)))
