@@ -97,8 +97,14 @@ def resolve_device(device: str | torch.device) -> torch.device:
     vehicle); ``"tpu"`` additionally asserts the backend really is a TPU."""
     if isinstance(device, torch.device):
         return device
-    if device not in _KNOWN and not device.startswith("cuda:"):
-        raise ValueError(f"Unknown device {device!r}. Expected one of {_KNOWN} or 'cuda:N'")
+    if (
+        device not in _KNOWN
+        and not device.startswith("cuda:")
+        and not device.startswith("xla:")
+    ):
+        raise ValueError(
+            f"Unknown device {device!r}. Expected one of {_KNOWN}, 'cuda:N', or 'xla:N'"
+        )
     if device == "auto":
         if _tpu_env() and _torch_xla() is not None:
             return _xla_torch_device()
@@ -107,7 +113,7 @@ def resolve_device(device: str | torch.device) -> torch.device:
         if mps_functional():
             return torch.device("mps")
         return torch.device("cpu")
-    if device in ("xla", "tpu"):
+    if device in ("xla", "tpu") or device.startswith("xla:"):
         if _torch_xla() is None:
             raise RuntimeError(
                 f"device={device!r} requested but torch_xla is not installed. "
@@ -121,6 +127,8 @@ def resolve_device(device: str | torch.device) -> torch.device:
                     f"device='tpu' requested but the XLA backend is {backend!r}; "
                     "use device='xla' to accept any XLA backend"
                 )
+        if device.startswith("xla:"):
+            return torch.device(device)
         return _xla_torch_device()
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("device='cuda' requested but CUDA is not available")

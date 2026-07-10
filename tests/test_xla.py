@@ -55,9 +55,12 @@ def _regressor(**overrides):
 
 
 def test_device_resolution_and_auto_guard():
+    import torch
+
     from masamlp.core.device import resolve_device, xla_backend_type
 
     assert resolve_device("xla").type == "xla"
+    assert resolve_device("xla:0") == torch.device("xla", 0)
     backend = xla_backend_type()
     if backend != "TPU":
         # "tpu" is a stricter claim than "xla": on XLA:CPU it must refuse.
