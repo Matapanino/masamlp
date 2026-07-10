@@ -37,6 +37,17 @@
   columns are present.
 - (Shipped in 0.3.0: TabR inference-time key caching, ModernNCA chunked
   eval scoring, per-model AMP auto-policy, multi-GPU member sharding.)
+- **TPU follow-ups** (0.4.0 shipped single-device TPU/XLA; verdict
+  2026-07-10, research/tpu-xla.md §7–9): fuse small-batch training steps
+  (`torch_xla.experimental.scan` / multi-step barriers) to cut the
+  per-step dispatch floor that makes resnet/realmlp fits dispatch-bound;
+  TabR's TPU eval search (topk over barrier-separated chunks, 85.6s vs
+  L4 3.1s at 345k); profile tab_transformer on TPU (5x slower than L4);
+  optional bf16 prediction (autocast currently wraps training only);
+  in-library TPU member sharding (blocked: torch_xla's graph executor is
+  not thread-safe across devices — revisit on TorchTPU or via opt-in
+  multiprocessing); diagnose the openxla-backend training inaccuracy
+  upstream; verify Colab v5e-1/v6e-1 (docs guidance exists, unverified).
 
 ## Models
 
