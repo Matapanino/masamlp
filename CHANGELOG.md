@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **TPU / XLA support (experimental).** `device="tpu"` / `"xla"` /
+  `"xla:N"` via `torch_xla` (lazily imported; not a dependency —
+  torch↔torch_xla versions are strictly paired, see docs/devices.md).
+  `device="auto"` prefers a detected TPU. bf16 autocast under
+  `amp="auto"`; training runs in lazy-tensor mode with one graph barrier
+  per optimizer step; all ten models train, predict, and round-trip
+  through `save_model`/`load_model` (bitwise CPU-load parity measured on
+  a Kaggle TPU VM v5e-8). `ens_mode="vectorized"` and `compile=True` are
+  refused on XLA (the openxla backend trained inaccurately in
+  verification). CI runs the XLA suite on the PJRT CPU backend. Design:
+  ADR 0002/0003; measurements: docs/verdicts/2026-07-10-tpu-report.md.
+- **Per-model AMP policies are now device-aware.** `amp_auto` may map
+  device types to policies; the retrieval models' KI-010 fp32 opt-out is
+  CUDA-only — on TPUs bf16 matched fp32 retrieval predictions exactly and
+  ran 1.5-7x faster (measured, 345k rows).
+- **Cross-version note:** the tabr exclusion mask and ModernNCA candidate
+  sampling were rewritten to static-shape forms (required for XLA, also
+  removes a host sync on CUDA), and `save_model` now normalizes state
+  dicts to CPU tensors. Same-seed results may differ at ulp level from
+  0.3.x; ModernNCA's candidate-sampling RNG stream changed.
 - **Parameter reference (`docs/parameters.md`).** Complete documentation of
   every estimator constructor parameter and every architecture's
   `model_params` (depth/width/dropout knobs, defaults, sizing notes with
