@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-07-11)
 
 - **TPU / XLA support (experimental).** `device="tpu"` / `"xla"` /
   `"xla:N"` via `torch_xla` (lazily imported; not a dependency —
