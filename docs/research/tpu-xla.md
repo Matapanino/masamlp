@@ -219,6 +219,43 @@ study (Kalamkar et al. 2019 [19]).
    cross-chunk fusion (predict 47.8s → 85.6s), accepted: correctness of
    ModernNCA eval over speed of an already-documented slow path.
 
+## 10. Colab v5e-1 verification + the torch_xla 2.9 matmul-precision change
+## (2026-07-12, 0.5.0 cycle)
+
+1. **Colab TPU v5e-1 works end to end** (billable CLI pool; ~20 min
+   session): the runtime ships python 3.12.13 + torch 2.9.0+cpu +
+   torch_xla 2.9.0 preinstalled (no install line needed, unlike the docs'
+   Cloud-VM guidance), 24-vCPU host, `TPU_ACCELERATOR_TYPE=v5e-1`.
+   `resolve_device("tpu"/"xla"/"auto")` → xla:0; resnet fit/predict,
+   save→CPU-load roundtrip, `xla_fuse_steps=8` fit and `amp_predict=True`
+   all ran (branch v0.5.0-tpu).
+2. **torch_xla 2.9 changed the TPU fp32 matmul default** from full
+   precision to one-pass bf16. Measured on v5e-1 (512×512, N(0,1),
+   CPU-vs-TPU max|diff|): as-shipped 2.6e-1; after
+   `torch_xla.backends.set_mat_mul_precision("high")` 1.4e-3 (bf16
+   3-pass); `"highest"` 4.6e-5 (fp32). Model-level: fp32-trained resnet
+   predictions deviated from their CPU-loaded copy by ~3e-2 — versus the
+   **bitwise** parity 0.4.0 measured on torch_xla 2.8 (wave A §7.3), which
+   was therefore a 2.8-default artifact, not a durable contract.
+3. **The precision knob must be set before the first compilation in the
+   process**: later calls are silently ignored for already-compiled graph
+   shapes (the compile cache keys on the graph, not the precision setting
+   — torch_xla itself warns about this). An in-session probe that flipped
+   the setting after a warm-up matmul measured no change; per-fresh-process
+   probes show the real effect. Same family as the §9.1 benchmark-ordering
+   trap: on XLA, *process state at first compile wins*.
+4. `torch.set_float32_matmul_precision` is not wired to the XLA backend
+   (reports "highest" while the TPU runs bf16 matmuls). Docs now carry the
+   `torch_xla.backends` recipe; masaMLP does not override the platform
+   default (no hidden global state).
+5. RNG placement: the XLA device RNG seed advances per graph *execution*,
+   so `xla_fuse_steps` (barrier placement) selects a different — equally
+   seeded-deterministic — stream for training-time device RNG (dropout,
+   retrieval sampling). Found by the XLA:CPU CI parity test (K=4 vs K=1
+   diverged ~2% on realmlp with scheduled dropout; RNG-free lnn is
+   K-invariant at 1e-6). Contract documented as batch_size-like: same
+   seed + same K ⇒ same model.
+
 ## Sources
 
 1. https://github.com/pytorch/xla/releases

@@ -60,7 +60,10 @@ DataParallel-style scatter/gather to pay off.
 Requires `torch_xla` (not a masamlp extra — its version is strictly coupled
 to torch's, minor for minor; install the pair your platform documents, e.g.
 `pip install torch~=2.8.0 torch_xla~=2.8.0` on a Cloud/Kaggle TPU VM).
-Design record: ADR 0002/0003; survey: [research/tpu-xla.md](research/tpu-xla.md).
+Colab TPU runtimes ship a matched pair preinstalled (v5e-1 verified
+2026-07-12: torch/torch_xla 2.9.0) — there, `pip install masamlp` alone is
+enough. Design record: ADR 0002/0003/0004; survey:
+[research/tpu-xla.md](research/tpu-xla.md).
 
 - `device="tpu"` asserts the XLA backend really is a TPU (fail-fast instead
   of silently training on CPU); `device="xla"` accepts any PJRT backend —
@@ -117,6 +120,26 @@ Design record: ADR 0002/0003; survey: [research/tpu-xla.md](research/tpu-xla.md)
 - Reproducibility: same seed + same device ⇒ same result holds on XLA (the
   XLA device RNG is seeded from `random_state`); XLA vs CUDA/CPU results
   are close, not bitwise — the existing cross-device rule.
+- **fp32 matmul precision is a torch_xla-version landmine.** torch_xla 2.8
+  ran TPU fp32 matmuls at full precision (masaMLP 0.4.0 measured *bitwise*
+  TPU-vs-CPU-load prediction parity); torch_xla 2.9 defaults them to
+  one-pass bf16 (measured on Colab v5e-1: 512×512 matmul deviates from CPU
+  by 2.6e-1 max; model predictions by ~3e-2). To restore precision call
+  `torch_xla.backends.set_mat_mul_precision("high")` (bf16 3-pass, ~1e-3)
+  or `"highest"` (fp32, ~5e-5) **before the first fit in the process** —
+  the XLA compile cache bakes the precision in, so setting it later
+  silently does nothing. `torch.set_float32_matmul_precision` is not wired
+  to XLA. masaMLP does not override the platform default (no hidden global
+  state); expect looser cross-device agreement on 2.9+ unless you set it.
+- **Batch size / lr tuning on TPU**: `batch_size="auto"` (1024) is
+  convergence-safe but leaves TPU throughput on the table for big data —
+  batch 8192 roughly halved 50k-row fit times in the 0.4.0 verification
+  while visibly degrading rmse at a fixed epoch budget. If you raise
+  `batch_size`, raise `learning_rate` with it (linear-ish as a starting
+  point), give the run more epochs with `early_stopping_rounds` on an eval
+  set, and treat the verdict tables in `docs/verdicts/` as the reference
+  points. `xla_fuse_steps` is the way to claw back small-batch dispatch
+  overhead *without* touching convergence-relevant settings.
 
 ## MPS (Apple Silicon)
 

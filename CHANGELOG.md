@@ -29,6 +29,13 @@ ADR 0003/0004, measurements: docs/verdicts/).
 - Benchmarks: step-fusion sweep/parity modes, bf16-predict matrix,
   tab_transformer TPU profile, a torch_xla `scan` step-loop prototype, and
   a masamlp-free openxla-backend inaccuracy repro for the upstream report.
+- **Docs:** Colab TPU (v5e-1) verified end to end — the runtime preinstalls
+  torch/torch_xla, so `pip install masamlp` suffices there. devices.md
+  documents that torch_xla 2.9 dropped TPU fp32 matmuls to one-pass bf16 by
+  default (0.4.0's bitwise TPU↔CPU prediction parity was a 2.8 artifact)
+  and the `torch_xla.backends.set_mat_mul_precision` recipe — which must
+  run before the first fit in the process — plus a TPU batch/lr tuning
+  note.
 
 ## 0.4.0 (2026-07-11)
 
