@@ -77,12 +77,15 @@ Design record: ADR 0002/0003; survey: [research/tpu-xla.md](research/tpu-xla.md)
 - **`xla_fuse_steps=K`** fuses K optimizer steps into one XLA program
   (barrier every K steps instead of every step). At tabular batch sizes the
   per-step dispatch floor — not FLOPs — dominates small-model fits on TPU;
-  fusion amortizes it. Barrier placement does not change the traced ops or
-  the RNG stream, so results are seed-stable across `K`. Prediction-side
-  analog: models declare `xla_eval_sync_chunks` (TabR fuses 8 eval chunks
-  per barrier; ModernNCA stays at 1 because its streamed full-corpus eval
-  graphs are HBM-heavy — 50.6 GiB demanded at a 276k corpus when unbarriered,
-  measured).
+  fusion amortizes it. Fits are deterministic for a fixed `K`; because the
+  XLA RNG seed advances per graph *execution*, training-time device RNG
+  (dropout masks, retrieval candidate sampling) draws a different — equally
+  random — stream under a different `K`, so changing `K` perturbs results
+  the way changing `batch_size` does (RNG-free training is `K`-invariant;
+  CI asserts this on XLA:CPU). Prediction-side analog: models declare
+  `xla_eval_sync_chunks` (TabR fuses 8 eval chunks per barrier; ModernNCA
+  stays at 1 because its streamed full-corpus eval graphs are HBM-heavy —
+  50.6 GiB demanded at a 276k corpus when unbarriered, measured).
 - `amp="auto"` means **bf16 autocast** (TPUs are bf16-native; no GradScaler
   exists on this path; fp16 is never used; autocast wraps the training step
   only). Per-model `amp_auto` policies are device-aware: the retrieval

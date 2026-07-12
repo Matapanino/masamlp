@@ -210,11 +210,28 @@ def test_vectorized_rejected_on_xla(reg_data):
         m.fit(X, y)
 
 
-def test_fuse_steps_matches_per_step_barriers(reg_data):
-    # xla_fuse_steps only moves the graph barrier; the traced ops and RNG
-    # stream are identical, so a fused fit must reproduce the per-step fit.
+def test_fuse_steps_invariant_without_device_rng(reg_data):
+    # Without training-time device RNG (no dropout; shuffling permutations
+    # are CPU-drawn) the traced ops are identical whatever the barrier
+    # placement, so a fused fit must reproduce the per-step fit.
     # batch_size=64 over 300 rows gives 5 steps/epoch — the K=4 grouping
     # covers both the full-group and the partial-tail-group signatures.
+    X, y, X_test, _ = reg_data
+    kw = dict(_ISOLATED, n_epochs=6, batch_size=64)
+    from masamlp.regressor import MasaRegressor
+
+    p1 = MasaRegressor(**kw, xla_fuse_steps=1).fit(X, y).predict(X_test)
+    p4 = MasaRegressor(**kw, xla_fuse_steps=4).fit(X, y).predict(X_test)
+    np.testing.assert_allclose(p1, p4, atol=1e-6)
+
+
+def test_fuse_steps_deterministic_per_k_with_dropout(reg_data):
+    # Dropout masks come from the XLA device RNG, whose per-execution seed
+    # advances at graph boundaries — so barrier placement selects a
+    # *different but equally seeded-deterministic* mask stream. The contract
+    # is: same seed + same K => identical; different K => different masks,
+    # statistically equivalent training (measured on XLA:CPU: max|diff|
+    # ~0.02 on this config).
     X, y, X_test, _ = reg_data
     kw = dict(
         model="realmlp",
@@ -228,9 +245,11 @@ def test_fuse_steps_matches_per_step_barriers(reg_data):
     )
     from masamlp.regressor import MasaRegressor
 
+    p4a = MasaRegressor(**kw, xla_fuse_steps=4).fit(X, y).predict(X_test)
+    p4b = MasaRegressor(**kw, xla_fuse_steps=4).fit(X, y).predict(X_test)
+    np.testing.assert_allclose(p4a, p4b, atol=1e-7)  # per-K determinism
     p1 = MasaRegressor(**kw, xla_fuse_steps=1).fit(X, y).predict(X_test)
-    p4 = MasaRegressor(**kw, xla_fuse_steps=4).fit(X, y).predict(X_test)
-    np.testing.assert_allclose(p1, p4, atol=1e-6)
+    np.testing.assert_allclose(p1, p4a, atol=0.1)  # equivalent, not equal
 
 
 def test_fuse_steps_validation(reg_data):

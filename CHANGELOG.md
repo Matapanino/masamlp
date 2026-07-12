@@ -8,8 +8,10 @@ ADR 0003/0004, measurements: docs/verdicts/).
 - **`xla_fuse_steps`** — fuse K optimizer steps into one XLA program
   (default 1 = the 0.4.0 one-barrier-per-step behavior). Targets the
   per-step dispatch floor that made small-model TPU fits (resnet, realmlp,
-  tab_transformer at batch 1024) dispatch-bound. Same seed ⇒ same model for
-  any K; no effect on non-XLA devices.
+  tab_transformer at batch 1024) dispatch-bound. Deterministic per K; a
+  different K gives training-time device RNG (dropout, retrieval sampling)
+  a different — equally random — stream, like changing `batch_size` does.
+  RNG-free training is K-invariant. No effect on non-XLA devices.
 - **`amp_predict`** — opt-in bf16 autocast for evaluation and prediction
   (training `amp` has never covered them). XLA/TPU, bf16-capable CUDA, and
   CPU; fp16 never. Retrieval models key their eval-encoding cache by the
