@@ -58,3 +58,10 @@
   `eval_metric="logloss"`/`"multi_logloss"` for the stop signal and convert to
   your task metric post-hoc; a discrete metric is a jumpy early-stopping
   signal.
+- **KI-013 — tab_transformer trains slowly on TPU: the attention backward
+  is the tax.** Profiled on v5e (batch 1024, bf16): the full train step is
+  ~100 ms/iter while the forward is ~8 ms — `nn.MultiheadAttention` at
+  `d_token=32`/`n_heads=8` (head_dim 4) lowers to MXU-hostile small ops in
+  reverse mode (no aten fallbacks, no recompiles — pure lowering quality).
+  Mitigations: larger `d_token`/fewer heads help the shapes; an SDPA-based
+  attention block is on the roadmap. GPU is unaffected.

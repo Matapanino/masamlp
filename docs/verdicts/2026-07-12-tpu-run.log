@@ -1,0 +1,219 @@
+===================== WAVE E1 =====================
+# masaMLP TPU wave E1 report (0.5.0)
+branch: v0.5.0-tpu; started 2026-07-12 08:55:22 UTC
+
+## Section 1 — install + env
+
+```
+$ git clone -b v0.5.0-tpu --depth 1 ...
+Cloning into '/kaggle/working/repo'...
+[rc=0 1s]
+```
+
+```
+$ /usr/local/bin/python -m pip install --no-deps --force-reinstall ...
+
+[rc=0 9s]
+```
+
+```
+$ /usr/local/bin/python -c import torch, torch_xla, masamlp; print('torch', torch.__version__, 'torch_xla', torch_xla.__version__, 'masamlp', masamlp.__version__)
+torch 2.8.0+cpu torch_xla 2.8.0 masamlp 0.4.0
+[rc=0 27s]
+```
+
+## Section 2 — step-fusion sweep (cold process per row, amp=auto, batch 1024)
+K=1 rows are the 0.4.0 baseline replicated on today's image.
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one resnet 1
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+resnet [fuse=1]              device=xla     amp=auto  fit    48.5s  predict(200000)  19.29s  rmse 0.1901
+                             [xla compiles=33 aten=aten::_local_scalar_dense=40]
+[rc=0 83s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one resnet 8
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+resnet [fuse=8]              device=xla     amp=auto  fit   102.0s  predict(200000)  19.71s  rmse 0.1951
+                             [xla compiles=40 aten=aten::_local_scalar_dense=40]
+[rc=0 137s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one resnet 32
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+resnet [fuse=32]             device=xla     amp=auto  fit   161.8s  predict(200000)  20.47s  rmse 0.2006
+                             [xla compiles=36 aten=aten::_local_scalar_dense=40]
+[rc=0 199s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one realmlp 1
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+realmlp (TD-S recipe) [fuse=1] device=xla     amp=auto  fit    71.0s  predict(200000)  21.00s  rmse 0.1737
+                             [xla compiles=37 aten=aten::_local_scalar_dense=40]
+[rc=0 109s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one realmlp 8
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+realmlp (TD-S recipe) [fuse=8] device=xla     amp=auto  fit    99.4s  predict(200000)  21.00s  rmse 0.1769
+                             [xla compiles=47 aten=aten::_local_scalar_dense=40]
+[rc=0 137s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one realmlp 32
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+realmlp (TD-S recipe) [fuse=32] device=xla     amp=auto  fit   150.5s  predict(200000)  22.37s  rmse 0.1779
+                             [xla compiles=40 aten=aten::_local_scalar_dense=40]
+[rc=0 191s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one tab_transformer 1
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tab_transformer [fuse=1]     device=xla     amp=auto  fit    76.5s  predict(200000)  59.97s  rmse 0.8215
+                             [xla compiles=33 aten=aten::_local_scalar_dense=20]
+[rc=0 158s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one tab_transformer 8
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tab_transformer [fuse=8]     device=xla     amp=auto  fit   417.5s  predict(200000)  64.21s  rmse 0.8318
+                             [xla compiles=40 aten=aten::_local_scalar_dense=20]
+[rc=0 505s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-one tab_transformer 32
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tab_transformer [fuse=32]    device=xla     amp=auto  fit   704.5s  predict(200000)  66.86s  rmse 0.8330
+                             [xla compiles=36 aten=aten::_local_scalar_dense=20]
+[rc=0 792s]
+```
+
+## Section 3 — step-fusion parity (same seed, K=1 vs K=8)
+
+```
+$ /usr/local/bin/python tpu_speed.py --fuse-parity
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+resnet                       fuse=1  rmse 0.234746
+resnet                       fuse=8  rmse 0.248133
+resnet                       PARITY max|pred(K=1) - pred(K=8)| = 4.215e-01
+realmlp (TD-S recipe)        fuse=1  rmse 0.159226
+realmlp (TD-S recipe)        fuse=8  rmse 0.158802
+realmlp (TD-S recipe)        PARITY max|pred(K=1) - pred(K=8)| = 9.235e-01
+[rc=0 309s]
+```
+
+## Section 4 — scan prototype (step loop as XLA While loop)
+
+```
+$ /usr/local/bin/python xla_step_fusion_prototype.py
+torch 2.8.0+cpu torch_xla 2.8.0 device xla:0
+loop K=1     epochs [0.49, 0.16, 0.17]s  (first incl. compile)  last-batch loss 0.19082
+loop K=8     epochs [1.13, 0.13, 0.13]s  (first incl. compile)  last-batch loss 0.19082
+scan         FAILED: RuntimeError: element 19 of tensors does not require grad and does not have a grad_fn
+PARITY loop K=8     max|param - loop K=1| = 0.000e+00
+[rc=0 27s]
+```
+
+## Section 5 — bf16 predict (fp32 vs bf16, steady-state, 200k rows)
+
+```
+$ /usr/local/bin/python tpu_speed.py --predict-amp-one resnet
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+resnet                       predict[fp32](200000)   0.81s  rmse 0.1901
+resnet                       predict[bf16](200000)   0.67s  rmse 0.1918
+resnet                       bf16 vs fp32: max|diff| 8.245e-02  max rel 1.489e+01
+[rc=0 107s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --predict-amp-one realmlp
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+realmlp (TD-S recipe)        predict[fp32](200000)   0.18s  rmse 0.1737
+realmlp (TD-S recipe)        predict[bf16](200000)   0.17s  rmse 0.1742
+realmlp (TD-S recipe)        bf16 vs fp32: max|diff| 1.075e-01  max rel 6.286e+01
+[rc=0 139s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --predict-amp-one ft_transformer
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+ft_transformer               predict[fp32](200000)   1.38s  rmse 0.2012
+ft_transformer               predict[bf16](200000)   1.38s  rmse 0.2020
+ft_transformer               bf16 vs fp32: max|diff| 7.885e-02  max rel 4.992e+03
+[rc=0 146s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --predict-amp-one tabr
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tabr                         predict[fp32](200000)  14.39s  rmse 0.1764
+tabr                         predict[bf16](200000)  14.84s  rmse 0.1795
+tabr                         bf16 vs fp32: max|diff| 1.534e-01  max rel 1.218e+03
+[rc=0 185s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --predict-amp-one tab_transformer
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tab_transformer              predict[fp32](200000)   2.38s  rmse 0.8215
+tab_transformer              predict[bf16](200000)   2.03s  rmse 0.8221
+tab_transformer              bf16 vs fp32: max|diff| 5.996e-02  max rel 6.330e+01
+[rc=0 238s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --predict-amp-one modernnca
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+modernnca                    predict[fp32](200000)   2.37s  rmse 0.6830
+modernnca                    predict[bf16](200000)   2.68s  rmse 0.6828
+modernnca                    bf16 vs fp32: max|diff| 2.855e-01  max rel 9.819e+01
+[rc=0 161s]
+```
+
+## Section 6 — tab_transformer profile (batch 1024, bf16)
+
+```
+$ /usr/local/bin/python tpu_speed.py --profile-tab-transformer
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+full train step (bf16)               100.25 ms/iter  [compiles=1 aten=none]
+forward only (train mode)              8.06 ms/iter  [compiles=0 aten=none]
+forward only (eval mode)               6.20 ms/iter  [compiles=0 aten=none]
+embedding only                         0.72 ms/iter  [compiles=0 aten=none]
+transformer blocks only                7.14 ms/iter  [compiles=0 aten=none]
+head only                              0.54 ms/iter  [compiles=0 aten=none]
+[rc=0 44s]
+```
+
+## Section 7 — openxla dynamo backend repro (masamlp-free)
+
+```
+$ /usr/local/bin/python openxla_repro.py
+torch 2.8.0+cpu torch_xla 2.8.0 device xla:0
+mlp          bf16=False lazy     rmse 0.2453  (6.2s)
+mlp          bf16=False openxla  rmse 0.2453  (3.9s)
+mlp          bf16=True  lazy     rmse 0.2452  (2.5s)
+mlp          bf16=True  openxla  rmse 0.2454  (3.0s)
+residual_ln  bf16=False lazy     rmse 0.2532  (8.8s)
+residual_ln  bf16=False openxla  rmse 0.2532  (5.3s)
+residual_ln  bf16=True  lazy     rmse 0.2576  (4.8s)
+residual_ln  bf16=True  openxla  rmse 0.2553  (5.2s)
+attention    bf16=False lazy     rmse 0.5760  (20.3s)
+attention    bf16=False openxla  rmse 0.5753  (11.3s)
+attention    bf16=True  lazy     rmse 0.5765  (9.5s)
+attention    bf16=True  openxla  rmse 0.5765  (9.6s)
+
+== verdict ==
+no divergence reproduced at this scale/config
+[rc=0 116s]
+```
+
+WAVE E1 COMPLETE

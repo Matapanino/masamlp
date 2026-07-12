@@ -37,11 +37,18 @@
   columns are present.
 - (Shipped in 0.3.0: TabR inference-time key caching, ModernNCA chunked
   eval scoring, per-model AMP auto-policy, multi-GPU member sharding.)
-- **TPU follow-ups** (0.4.0 shipped single-device TPU/XLA; 0.5.0 addresses
-  the list — see CHANGELOG): remaining items are in-library TPU member
-  sharding (decided against for now in ADR 0004 — re-evaluate when TorchTPU
-  is public or torch_xla's executor becomes thread-safe across devices) and
-  whatever the 0.5.0 verdict re-opens.
+- **TPU follow-ups** (0.4.0 shipped single-device TPU/XLA; 0.5.0 addressed
+  the list — see CHANGELOG and verdicts/2026-07-12): still open after the
+  0.5.0 measurements: (a) in-library TPU member sharding — decided against
+  for now in ADR 0004; re-evaluate when TorchTPU is public or torch_xla's
+  executor becomes thread-safe across devices; (b) step-loop-in-graph via
+  `scan` — blocked on torch_xla 2.8 (`torch.func.grad` fails in the scan
+  body), the only remaining route to the small-batch dispatch floor since
+  unrolled K-step fusion measured as a compile-cost loss; (c) an SDPA-based
+  attention block for `tab_transformer` (KI-013 — the TPU attention
+  backward is ~92% of its step); (d) a self-contained repro of the openxla
+  dynamo miscompile (minimal archs did not reproduce it) before filing
+  upstream.
 
 ## Models
 

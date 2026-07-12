@@ -6,9 +6,13 @@ TPU optimization round 2 (follow-ups from the 0.4.0 verification; design:
 ADR 0003/0004, measurements: docs/verdicts/).
 
 - **`xla_fuse_steps`** — fuse K optimizer steps into one XLA program
-  (default 1 = the 0.4.0 one-barrier-per-step behavior). Targets the
-  per-step dispatch floor that made small-model TPU fits (resnet, realmlp,
-  tab_transformer at batch 1024) dispatch-bound. Deterministic per K; a
+  (default 1 = the 0.4.0 one-barrier-per-step behavior). Measured verdict
+  (TPU v5e): the default stays 1 — fusing buys ~20% steady-state per-step
+  overhead but XLA compile time grows super-linearly with the fused graph
+  and dominates at realistic fit lengths; shipped as a documented escape
+  hatch for very long fits. `torch_xla.experimental.scan` (the in-graph
+  loop that would amortize compilation) is blocked on torch_xla 2.8 —
+  `torch.func.grad` fails inside the scan body. Deterministic per K; a
   different K gives training-time device RNG (dropout, retrieval sampling)
   a different — equally random — stream, like changing `batch_size` does.
   RNG-free training is K-invariant. No effect on non-XLA devices.
@@ -17,7 +21,9 @@ ADR 0003/0004, measurements: docs/verdicts/).
   CPU; fp16 never. Retrieval models key their eval-encoding cache by the
   ambient autocast dtype so alternating fp32/bf16 predicts stay correct,
   and ModernNCA's streamed eval softmax now accumulates in fp32 (a no-op
-  for the default fp32 path).
+  for the default fp32 path). Verified on TPU v5e: rmse-equivalent on all
+  six benchmark models; speed-neutral (fp32 prediction is already fast) —
+  a memory/marginal knob, not a speedup.
 - **TabR TPU eval search: partial cross-chunk fusion restored.** Models now
   declare `xla_eval_sync_chunks`: TabR fuses 8 eval chunks per XLA graph
   barrier (the 0.4.0 per-chunk barrier — added for ModernNCA's HBM safety —

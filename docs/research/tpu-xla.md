@@ -256,6 +256,57 @@ study (Kalamkar et al. 2019 [19]).
    K-invariant at 1e-6). Contract documented as batch_size-like: same
    seed + same K ⇒ same model.
 
+## 11. Wave E findings (Kaggle v5e-8, 2026-07-12 — the 0.5.0 measurements)
+
+Method note: the pool was congested (Saturday post-quota-reset; batch runs
+initially cycled COMPLETE→rollback→requeue without saving — output was
+recovered by downloading inside the short COMPLETE window). All rows below
+are cold-cache, one measurement per process.
+
+1. **Step fusion (`xla_fuse_steps`) loses at tabular scale — compile cost
+   eats the dispatch savings.** Verdict configs, amp=auto, batch 1024,
+   fit seconds cold (K=1 / 8 / 32): resnet 48.5 / 102.0 / 161.8; realmlp
+   71.0 / 99.4 / 150.5; tab_transformer 76.5 / 417.5 / 704.5. XLA
+   compilation grows super-linearly with the unrolled K-step graph and
+   dwarfs the ~20% steady-state per-step saving the fusion really does buy
+   (prototype MLP, epoch steady-state: K=1 0.165s vs K=8 0.13s, bitwise
+   param parity without dropout). Fusion could only pay for very long fits
+   (roughly ≥256 epochs at resnet scale); the default stays 1 and the
+   parameter is documented as a measured non-win.
+2. **`scan` over training steps is blocked on torch_xla 2.8**:
+   `torch.func.grad` inside the scan body fails AOTAutograd tracing
+   ("element 19 of tensors does not require grad"). The in-graph While loop
+   — the approach that would amortize compilation — needs either upstream
+   support or hand-derived backward; revisit on TorchTPU.
+3. **The honest 0.4.0 baseline was partly warm.** Cold K=1 rows (resnet fit
+   48.5s, first-predict 19.3s with compiles=33) show the 0.4.0 verdict
+   table's small-model bf16 rows (34.8s, predict 0.80s, compiles=4) rode
+   the same-process cache the wave-C correction only fixed for retrieval
+   rows. Steady-state predict times today (fp32: resnet 0.81s, realmlp
+   0.18s, ft 1.38s, tab_transformer 2.38s) match the 0.4.0 "bf16 predict"
+   column — prediction was always fp32 and amp-independent; the column
+   measured warmth, not bf16.
+4. **bf16 prediction (`amp_predict`) is accuracy-safe and speed-neutral on
+   v5e** (steady-state, 200k rows): resnet 0.81→0.67s, tab_transformer
+   2.38→2.03s, realmlp/ft flat, tabr 14.4→14.8s, modernnca 2.37→2.68s;
+   Δrmse ≤ 0.003 everywhere, max|pred diff| 0.06–0.29 (bf16 scale). Ships
+   as a correctness-verified opt-in, sold for memory/marginal gains — not
+   as a speedup.
+5. **tab_transformer's TPU tax is the attention backward.** Per-section
+   profile (batch 1024, bf16, per-iter barrier): full train step 100.3
+   ms/iter vs forward-only 8.1 (blocks 7.1, embedding 0.7, head 0.5) —
+   the backward+optimizer is ~92% of the step, ~11x the forward, vs the
+   usual 2-3x. `nn.MultiheadAttention` with d_token 32 / head_dim 4 lowers
+   to MXU-hostile small ops in reverse mode. Candidate fix (roadmap): an
+   SDPA-based block or width guidance; no fallbacks and no recompiles — it
+   is pure lowering quality.
+6. **The openxla miscompile did not reproduce in minimal form**: {mlp,
+   residual_ln, tiny-attention} × {fp32, bf16} × {lazy, openxla} all match
+   (and openxla was up to ~1.6x faster). Wave B's ft_transformer collapse
+   (rmse 0.20→3.18) therefore needs something masamlp-specific (feature
+   tokenizer / schedule / param groups) — upstream issue deferred until a
+   self-contained repro exists; `compile=True` stays refused on XLA.
+
 ## Sources
 
 1. https://github.com/pytorch/xla/releases

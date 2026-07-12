@@ -78,17 +78,21 @@ enough. Design record: ADR 0002/0003/0004; survey:
   backend trained ~40% faster but with badly degraded accuracy in the TPU
   v5e verification (ft_transformer rmse 0.20 → 3.18).
 - **`xla_fuse_steps=K`** fuses K optimizer steps into one XLA program
-  (barrier every K steps instead of every step). At tabular batch sizes the
-  per-step dispatch floor — not FLOPs — dominates small-model fits on TPU;
-  fusion amortizes it. Fits are deterministic for a fixed `K`; because the
-  XLA RNG seed advances per graph *execution*, training-time device RNG
-  (dropout masks, retrieval candidate sampling) draws a different — equally
-  random — stream under a different `K`, so changing `K` perturbs results
-  the way changing `batch_size` does (RNG-free training is `K`-invariant;
-  CI asserts this on XLA:CPU). Prediction-side analog: models declare
-  `xla_eval_sync_chunks` (TabR fuses 8 eval chunks per barrier; ModernNCA
-  stays at 1 because its streamed full-corpus eval graphs are HBM-heavy —
-  50.6 GiB demanded at a 276k corpus when unbarriered, measured).
+  (barrier every K steps instead of every step). **Measured verdict (v5e,
+  2026-07-12): keep the default 1.** Fusion does buy ~20% steady-state
+  per-step overhead, but XLA compile time grows super-linearly with the
+  unrolled graph and dominates real fits (resnet 40-epoch fit 48.5s at K=1
+  vs 102s at K=8; tab_transformer 76.5s → 704.5s at K=32). Worth trying
+  only for very long fits (hundreds of epochs) on small graphs. Fits are
+  deterministic for a fixed `K`; because the XLA RNG seed advances per
+  graph *execution*, training-time device RNG (dropout masks, retrieval
+  candidate sampling) draws a different — equally random — stream under a
+  different `K`, so changing `K` perturbs results the way changing
+  `batch_size` does (RNG-free training is `K`-invariant; CI asserts this
+  on XLA:CPU). Prediction-side analog: models declare
+  `xla_eval_sync_chunks` (ModernNCA stays at 1 because its streamed
+  full-corpus eval graphs are HBM-heavy — 50.6 GiB demanded at a 276k
+  corpus when unbarriered, measured).
 - `amp="auto"` means **bf16 autocast** (TPUs are bf16-native; no GradScaler
   exists on this path; fp16 is never used; autocast wraps the training step
   only). Per-model `amp_auto` policies are device-aware: the retrieval
@@ -99,7 +103,10 @@ enough. Design record: ADR 0002/0003/0004; survey:
   evaluation and `predict` into bf16 autocast (XLA/TPU, bf16 CUDA, CPU).
   Expect bf16-precision output differences (~3 significant decimal digits);
   ModernNCA's streamed eval softmax accumulates in fp32 regardless, so only
-  the encode/distance math is low-precision.
+  the encode/distance math is low-precision. Measured on v5e (steady state,
+  200k rows): rmse-equivalent on all six benchmark models, speed neutral to
+  ±17% — TPU fp32 prediction is already fast, so treat this as a memory /
+  marginal knob, not a speedup.
 - `batch_size="auto"` resolves exactly as on every other device — masaMLP
   never changes convergence behavior per device. TPUs like large batches:
   for throughput on big data, set `batch_size` (and re-tune
