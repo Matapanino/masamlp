@@ -205,11 +205,13 @@ train in float32. With multiple GPUs and `n_ens > 1`, ensemble members are
 sharded across all GPUs and trained concurrently; opt out with
 `device="cuda:0"`.
 
-**TPU (experimental, 0.4.0):** `device="tpu"` (or `"xla"`) trains on
-Cloud/Kaggle TPUs via `torch_xla` — bf16 by default, all ten models,
-verified on a Kaggle TPU VM. Kaggle grants TPU quota *separately* from GPU
-quota, so this is extra free accelerator time for competition workloads.
-Details, install pairing, and measured numbers:
+**TPU (experimental, 0.4.0/0.5.0):** `device="tpu"` (or `"xla"`) trains on
+Cloud/Kaggle/Colab TPUs via `torch_xla` — bf16 by default, all ten models,
+verified on Kaggle v5e-8 and Colab v5e-1. Kaggle grants TPU quota
+*separately* from GPU quota, so this is extra free accelerator time for
+competition workloads. 0.5.0 adds opt-in bf16 prediction (`amp_predict`)
+and large-corpus TabR eval fusion (predict −44% at 345k rows on TPU).
+Details, install pairing, tuning guidance, and measured numbers:
 [docs/devices.md](docs/devices.md).
 
 ## Development
