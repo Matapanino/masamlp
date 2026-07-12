@@ -163,6 +163,25 @@ def test_grad_enabled_eval_does_not_touch_cache(name):
     assert model._eval_cache is None
 
 
+@pytest.mark.parametrize("name", ["tabr", "modernnca"])
+def test_eval_cache_keyed_by_autocast_dtype(name):
+    # A cache built under bf16 prediction (amp_predict) must not serve a
+    # later fp32 predict, and vice versa — the cache key is the encoder's
+    # ambient autocast dtype.
+    model = _make_model(name, 3, 3)
+    _prime_cache(model)
+    assert model._eval_cache_dtype == torch.float32
+    q_num, q_cat = _query()
+    with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+        out_bf16 = model(q_num, q_cat)
+    assert model._eval_cache_dtype == torch.bfloat16  # rebuilt, re-keyed
+    with torch.no_grad():
+        out_fp32 = model(q_num, q_cat)
+    assert model._eval_cache_dtype == torch.float32
+    assert torch.isfinite(out_bf16).all() and torch.isfinite(out_fp32).all()
+    assert torch.allclose(out_bf16.float(), out_fp32, atol=0.1)
+
+
 def test_cache_not_in_state_dict():
     model = _make_model("tabr", 3, 3)
     _prime_cache(model)

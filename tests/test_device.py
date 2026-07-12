@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 import torch
 
-from masamlp.core.device import mps_functional, resolve_amp, resolve_device
+from masamlp.core.device import (
+    mps_functional,
+    resolve_amp,
+    resolve_device,
+    resolve_predict_amp,
+)
 from masamlp.regressor import MasaRegressor
 
 _KW = dict(n_epochs=10, random_state=0, model_params={"d": 32, "n_blocks": 1})
@@ -85,6 +90,30 @@ def test_amp_auto_respects_model_policy(monkeypatch):
     assert resolve_amp("auto", torch.device("cuda"), _Bf16Only()) == (False, None)
     monkeypatch.setattr(device_mod, "_cuda_amp_dtype", lambda device: torch.bfloat16)
     assert resolve_amp("auto", torch.device("cuda"), _Bf16Only()) == (True, torch.bfloat16)
+
+
+def test_resolve_predict_amp():
+    cpu = torch.device("cpu")
+    xla = torch.device("xla")  # pure-policy check; no torch_xla needed
+    assert resolve_predict_amp(False, cpu) is None
+    assert resolve_predict_amp("off", xla) is None
+    assert resolve_predict_amp(True, xla) is torch.bfloat16
+    assert resolve_predict_amp("on", cpu) is torch.bfloat16
+    with pytest.warns(UserWarning, match="amp_predict"):
+        assert resolve_predict_amp(True, torch.device("mps")) is None
+    with pytest.raises(ValueError, match="amp_predict"):
+        resolve_predict_amp("banana", cpu)
+
+
+def test_amp_predict_cpu_end_to_end(reg_data):
+    # bf16 prediction on CPU: same fitted model, opt-in cast, close outputs.
+    X, y, X_test, _ = reg_data
+    m = MasaRegressor(device="cpu", **_KW).fit(X, y)
+    p32 = m.predict(X_test)
+    m.set_params(amp_predict=True)
+    p16 = m.predict(X_test)
+    assert np.all(np.isfinite(p16))
+    np.testing.assert_allclose(p16, p32, atol=0.05, rtol=0.05)
 
 
 def test_amp_auto_model_flags():

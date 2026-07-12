@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+TPU optimization round 2 (follow-ups from the 0.4.0 verification; design:
+ADR 0003/0004, measurements: docs/verdicts/).
+
+- **`xla_fuse_steps`** — fuse K optimizer steps into one XLA program
+  (default 1 = the 0.4.0 one-barrier-per-step behavior). Targets the
+  per-step dispatch floor that made small-model TPU fits (resnet, realmlp,
+  tab_transformer at batch 1024) dispatch-bound. Same seed ⇒ same model for
+  any K; no effect on non-XLA devices.
+- **`amp_predict`** — opt-in bf16 autocast for evaluation and prediction
+  (training `amp` has never covered them). XLA/TPU, bf16-capable CUDA, and
+  CPU; fp16 never. Retrieval models key their eval-encoding cache by the
+  ambient autocast dtype so alternating fp32/bf16 predicts stay correct,
+  and ModernNCA's streamed eval softmax now accumulates in fp32 (a no-op
+  for the default fp32 path).
+- **TabR TPU eval search: partial cross-chunk fusion restored.** Models now
+  declare `xla_eval_sync_chunks`: TabR fuses 8 eval chunks per XLA graph
+  barrier (the 0.4.0 per-chunk barrier — added for ModernNCA's HBM safety —
+  cost TabR's chunked search its fusion: predict 47.8s → 85.6s at 345k);
+  ModernNCA keeps the strict per-chunk barrier.
+- **ADR 0004:** no in-library TPU multi-device path (xmp.spawn rejected);
+  the `TPU_VISIBLE_CHIPS` one-process-per-chip recipe remains the
+  full-board story until TorchTPU is public.
+- Benchmarks: step-fusion sweep/parity modes, bf16-predict matrix,
+  tab_transformer TPU profile, a torch_xla `scan` step-loop prototype, and
+  a masamlp-free openxla-backend inaccuracy repro for the upstream report.
+
 ## 0.4.0 (2026-07-11)
 
 - **TPU / XLA support (experimental).** `device="tpu"` / `"xla"` /

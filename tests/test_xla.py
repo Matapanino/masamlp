@@ -208,3 +208,92 @@ def test_vectorized_rejected_on_xla(reg_data):
     m = _regressor(n_ens=2, ens_mode="vectorized", model="resnet")
     with pytest.raises(ValueError, match="vectorized"):
         m.fit(X, y)
+
+
+def test_fuse_steps_matches_per_step_barriers(reg_data):
+    # xla_fuse_steps only moves the graph barrier; the traced ops and RNG
+    # stream are identical, so a fused fit must reproduce the per-step fit.
+    # batch_size=64 over 300 rows gives 5 steps/epoch — the K=4 grouping
+    # covers both the full-group and the partial-tail-group signatures.
+    X, y, X_test, _ = reg_data
+    kw = dict(
+        model="realmlp",
+        model_params={"hidden_sizes": [32, 32], "dropout": 0.15,
+                      "dropout_schedule": "flat_cos"},
+        n_epochs=6,
+        batch_size=64,
+        device="xla",
+        amp=False,
+        random_state=11,
+    )
+    from masamlp.regressor import MasaRegressor
+
+    p1 = MasaRegressor(**kw, xla_fuse_steps=1).fit(X, y).predict(X_test)
+    p4 = MasaRegressor(**kw, xla_fuse_steps=4).fit(X, y).predict(X_test)
+    np.testing.assert_allclose(p1, p4, atol=1e-6)
+
+
+def test_fuse_steps_validation(reg_data):
+    X, y, _, _ = reg_data
+    with pytest.raises(ValueError, match="xla_fuse_steps"):
+        _regressor(xla_fuse_steps=0).fit(X, y)
+
+
+def test_amp_predict_bf16_xla(reg_data):
+    # bf16 prediction is opt-in and must stay close to the fp32 predictions
+    # of the same fitted model (bf16 has ~3 significant decimal digits).
+    X, y, X_test, _ = reg_data
+    m = _regressor(n_epochs=15).fit(X, y)
+    p32 = m.predict(X_test)
+    m.set_params(amp_predict=True)
+    p16 = m.predict(X_test)
+    assert np.all(np.isfinite(p16))
+    np.testing.assert_allclose(p16, p32, atol=0.05, rtol=0.05)
+
+
+@pytest.mark.parametrize("name", ["tabr", "modernnca"])
+def test_amp_predict_retrieval_cache_dtype_xla(name, clf_data):
+    # Alternating fp32 / bf16 predicts on one fitted retrieval model must not
+    # serve a stale-dtype eval cache (the cache is keyed by autocast state).
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    m = MasaClassifier(
+        model=name,
+        model_params=dict(TINY_PARAMS[name]),
+        n_epochs=2,
+        device="xla",
+        amp=False,
+        random_state=0,
+    ).fit(X, y)
+    p32 = m.predict_proba(X_test)
+    m.set_params(amp_predict=True)
+    p16 = m.predict_proba(X_test)
+    m.set_params(amp_predict=False)
+    p32_again = m.predict_proba(X_test)
+    np.testing.assert_allclose(p32, p32_again, atol=1e-6)
+    np.testing.assert_allclose(p16, p32, atol=0.05)
+
+
+def test_eval_sync_chunks_do_not_change_results_xla(clf_data):
+    # TabR fuses several eval chunks per barrier (xla_eval_sync_chunks=8);
+    # barrier placement must never change the predictions.
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    kw = dict(
+        model="tabr",
+        model_params=dict(TINY_PARAMS["tabr"]),
+        n_epochs=2,
+        eval_batch_size=32,  # forces many chunks on the tiny test split
+        device="xla",
+        amp=False,
+        random_state=0,
+    )
+    m = MasaClassifier(**kw).fit(X, y)
+    assert m.model_.xla_eval_sync_chunks == 8
+    p_fused = m.predict_proba(X_test)
+    m.model_.xla_eval_sync_chunks = 1
+    m.model_.invalidate_eval_cache()
+    p_step = m.predict_proba(X_test)
+    np.testing.assert_allclose(p_fused, p_step, atol=1e-6)

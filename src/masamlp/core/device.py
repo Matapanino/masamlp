@@ -223,6 +223,41 @@ def resolve_amp(
     raise ValueError(f"Unknown amp setting {amp!r}. Expected 'auto', True/'on', or False/'off'")
 
 
+def resolve_predict_amp(amp_predict: str | bool, device: torch.device) -> torch.dtype | None:
+    """The autocast dtype for evaluation/prediction, or ``None`` for the
+    default fp32 path.
+
+    Prediction precision is a separate contract from training AMP (``amp``
+    wraps the training step only), so it gets its own opt-in: ``False`` (the
+    default) keeps fp32 everywhere; ``True``/``"on"`` casts to bf16 on
+    devices where that is native (XLA/TPU, bf16-capable CUDA, CPU) and warns
+    and stays fp32 elsewhere. fp16 prediction is never offered — bf16 keeps
+    the fp32 exponent range, fp16 under/overflows on prediction-scale
+    outputs."""
+    if amp_predict is False or amp_predict == "off":
+        return None
+    if amp_predict is True or amp_predict == "on":
+        if device.type == "xla" or device.type == "cpu":
+            return torch.bfloat16
+        if device.type == "cuda":
+            if _cuda_amp_dtype(device) is torch.bfloat16:
+                return torch.bfloat16
+            warnings.warn(
+                "amp_predict=True ignored: this CUDA device has no bf16 support "
+                "(fp16 prediction is not offered); predicting in float32",
+                stacklevel=2,
+            )
+            return None
+        warnings.warn(
+            f"amp_predict=True is not supported on {device.type}; predicting in float32",
+            stacklevel=2,
+        )
+        return None
+    raise ValueError(
+        f"Unknown amp_predict setting {amp_predict!r}. Expected True/'on' or False/'off'"
+    )
+
+
 def maybe_compile(model: torch.nn.Module, enable: bool, device: torch.device) -> torch.nn.Module:
     """Apply ``torch.compile`` when requested, falling back with a warning.
     XLA devices always run in lazy-tensor mode: the ``openxla`` dynamo

@@ -155,10 +155,13 @@ def predict_members_grouped(
     data: TabularData,
     transform: Callable[[Tensor], Tensor],
     batch_size: int = 8192,
+    amp_predict: str | bool = False,
 ) -> list[np.ndarray]:
     """Batched inference for members resident on several devices: one worker
-    thread and one data copy per device, member order preserved."""
-    from masamlp.core.device import module_device
+    thread and one data copy per device, member order preserved.
+    ``amp_predict`` is resolved per device (sharded members are all CUDA, but
+    bf16 support can differ across heterogeneous boards)."""
+    from masamlp.core.device import module_device, resolve_predict_amp
 
     devices = [module_device(m) for m in members]
     preds: list[np.ndarray | None] = [None] * len(members)
@@ -166,13 +169,16 @@ def predict_members_grouped(
     def worker(device: torch.device, member_ids: list[int], stop: threading.Event) -> None:
         try:
             data_d = data.to(device)
+            autocast_dtype = resolve_predict_amp(amp_predict, device)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
             raise _MemberError(member_ids[0], exc) from exc
         for i in member_ids:
             if stop.is_set():
                 return
             try:
-                preds[i] = predict_transformed(members[i], data_d, transform, batch_size)
+                preds[i] = predict_transformed(
+                    members[i], data_d, transform, batch_size, autocast_dtype=autocast_dtype
+                )
             except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
                 raise _MemberError(i, exc) from exc
 

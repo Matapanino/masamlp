@@ -48,6 +48,13 @@ def _block(
 
 
 class TabR(RetrievalBase):
+    # TabR's eval graphs (chunked search + context re-encode) are HBM-light —
+    # unbarriered eval ran a 276k-candidate corpus without OOM on a 16 GiB
+    # v5e chip — so several eval chunks may fuse into one XLA program to win
+    # back the cross-chunk optimization the 0.4.0 per-chunk barrier cost
+    # (predict 47.8s -> 85.6s at 345k, measured). ModernNCA stays at 1.
+    xla_eval_sync_chunks = 8
+
     def __init__(
         self,
         embedding: FeatureEmbedding,
@@ -171,9 +178,10 @@ class TabR(RetrievalBase):
         cache_usable = self._eval_cache_usable()
         with torch.no_grad():
             if cache_usable:
-                if self._eval_cache is None:
-                    self._eval_cache = self._candidate_keys()
-                cand_k = self._eval_cache
+                cand_k = self._eval_cache_get()
+                if cand_k is None:
+                    cand_k = self._candidate_keys()
+                    self._eval_cache_set(cand_k)
             else:
                 cand_k = self._candidate_keys()
             exclude = self.current_batch_indices if excluding_self else None

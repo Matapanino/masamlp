@@ -24,6 +24,7 @@ from masamlp.core.device import (
     maybe_compile,
     resolve_amp,
     resolve_device,
+    resolve_predict_amp,
     set_threads,
     xla_seed,
     xla_sync_fn,
@@ -53,6 +54,15 @@ class TrainerConfig:
     ema_decay: float | None = None
     device: str | torch.device = "auto"
     amp: str | bool = "auto"
+    # bf16 autocast for evaluation and prediction (training AMP never covers
+    # them). Opt-in: False keeps the fp32 predict contract; True/"on" forces
+    # bf16 where the device supports it.
+    amp_predict: str | bool = False
+    # XLA only: optimizer steps per graph barrier. 1 = one graph per step
+    # (the 0.4.0 behavior); K > 1 fuses K steps into one XLA program, which
+    # amortizes the per-step dispatch floor that dominates small-model fits
+    # on TPU at tabular batch sizes. No effect on other devices.
+    xla_fuse_steps: int = 1
     compile: bool = False
     early_stopping_rounds: int | None = None
     random_state: int | None = None
@@ -117,27 +127,38 @@ def predict_transformed(
     data: TabularData,
     transform: Callable[[Tensor], Tensor],
     batch_size: int = 8192,
+    autocast_dtype: torch.dtype | None = None,
 ) -> np.ndarray:
     """Batched inference -> prediction-scale NumPy array; ``(n,)`` when the
     output has a single column. Chunk outputs stay on the device and move to
-    the host once at the end. On XLA a graph barrier runs per chunk: without
-    it every chunk's forward fuses into one program whose intermediates all
-    coexist — ModernNCA's streamed eval at 345k rows demanded 50.6 GiB of
-    16 GiB HBM (measured); the transfer stays batched, the graphs must not."""
+    the host once at the end. On XLA a graph barrier runs every
+    ``xla_eval_sync_chunks`` chunks (a model policy attribute, default 1):
+    without any barrier every chunk's forward fuses into one program whose
+    intermediates all coexist — ModernNCA's streamed eval at 345k rows
+    demanded 50.6 GiB of 16 GiB HBM (measured), which is why its policy stays
+    at 1 — while models whose eval graphs are HBM-light (TabR) fuse several
+    chunks to win back cross-chunk optimization. The transfer stays batched
+    either way. ``autocast_dtype`` wraps the forward in autocast (bf16
+    prediction, opt-in via ``amp_predict``); outputs are always fp32."""
     model.eval()
     outs: list[Tensor] = []
     device = data.x_num.device
     barrier = xla_sync_fn() if device.type == "xla" else None
+    sync_chunks = max(1, int(getattr(model, "xla_eval_sync_chunks", 1)))
     # inference_mode tensors break XLA's lazy tracing ("Cannot set
     # version_counter for inference tensor"); no_grad is the XLA-safe
     # equivalent and passes the retrieval models' eval-cache gate too.
     no_autograd = torch.no_grad() if device.type == "xla" else torch.inference_mode()
     with no_autograd:
-        for start in range(0, len(data), batch_size):
+        for chunk, start in enumerate(range(0, len(data), batch_size), start=1):
             idx = torch.arange(start, min(start + batch_size, len(data)), device=device)
             batch = data.slice(idx)
-            outs.append(transform(model(batch.x_num, batch.x_cat)).float())
-            if barrier is not None:
+            with torch.autocast(
+                device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None
+            ):
+                out = transform(model(batch.x_num, batch.x_cat))
+            outs.append(out.float())
+            if barrier is not None and chunk % sync_chunks == 0:
                 barrier()
     pred = torch.cat(outs).cpu().numpy()
     return pred[:, 0] if pred.ndim == 2 and pred.shape[1] == 1 else pred
@@ -301,6 +322,7 @@ class Trainer:
         model_has_schedule = hasattr(model, "set_schedule_t")
 
         amp_enabled, amp_dtype = resolve_amp(config.amp, device, model)
+        predict_dtype = resolve_predict_amp(config.amp_predict, device)
         # GradScaler only exists for cuda/cpu; fp16 (pre-bf16 GPUs) needs it.
         # XLA is always bf16 or fp32, so the scaler stays a disabled
         # passthrough there.
@@ -309,8 +331,16 @@ class Trainer:
             enabled=amp_enabled and amp_dtype == torch.float16,
         )
         # Lazy XLA queues ops until a barrier; one barrier per optimizer step
-        # is the canonical granularity (without it the whole epoch fuses into
-        # one unboundedly large graph).
+        # is the safe granularity (without any the whole epoch fuses into one
+        # unboundedly large graph). xla_fuse_steps > 1 barriers every K steps
+        # instead, fusing K steps into one XLA program to amortize the
+        # per-step dispatch floor; epochs always end on a barrier so graph
+        # signatures stay stable across epochs.
+        fuse_steps = config.xla_fuse_steps
+        if not isinstance(fuse_steps, int) or isinstance(fuse_steps, bool) or fuse_steps < 1:
+            raise ValueError(
+                f"xla_fuse_steps must be a positive int, got {config.xla_fuse_steps!r}"
+            )
         step_barrier = xla_sync_fn() if device.type == "xla" else None
 
         n = len(train)
@@ -370,6 +400,7 @@ class Trainer:
         for epoch in range(config.n_epochs):
             run_model.train()
             epoch_loss = torch.zeros((), device=device)
+            unflushed_steps = 0
             if full_batch:
                 batches: list[Tensor | None] = [None]
             elif device.type == "xla":
@@ -421,8 +452,12 @@ class Trainer:
                 if ema_params is not None:
                     _update_ema(model, ema_params, ema_decay)
                 epoch_loss += loss * (len(batch) / n)
-                if step_barrier is not None:
+                unflushed_steps += 1
+                if step_barrier is not None and unflushed_steps >= fuse_steps:
                     step_barrier()
+                    unflushed_steps = 0
+            if step_barrier is not None and unflushed_steps:
+                step_barrier()
             # One host sync per epoch keeps the GPU pipeline full.
             epoch_loss_val = float(epoch_loss)
             if not np.isfinite(epoch_loss_val):
@@ -441,7 +476,11 @@ class Trainer:
 
             for es in eval_sets:
                 pred = predict_transformed(
-                    run_model, es.data, objective.transform, config.eval_batch_size
+                    run_model,
+                    es.data,
+                    objective.transform,
+                    config.eval_batch_size,
+                    autocast_dtype=predict_dtype,
                 )
                 if inverse_target is not None:
                     pred = inverse_target(pred)

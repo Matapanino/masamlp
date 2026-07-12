@@ -100,6 +100,11 @@ def fit_vectorized(
         warnings.warn(
             "AMP is disabled for vectorized ensembles; training in float32", stacklevel=2
         )
+    if config.amp_predict not in (False, "off"):
+        warnings.warn(
+            "amp_predict is ignored for vectorized ensembles; predicting in float32",
+            stacklevel=2,
+        )
 
     seed_everything(config.random_state)
     k = len(models)
