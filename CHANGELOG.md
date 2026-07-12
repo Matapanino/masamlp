@@ -24,11 +24,14 @@ ADR 0003/0004, measurements: docs/verdicts/).
   for the default fp32 path). Verified on TPU v5e: rmse-equivalent on all
   six benchmark models; speed-neutral (fp32 prediction is already fast) —
   a memory/marginal knob, not a speedup.
-- **TabR TPU eval search: partial cross-chunk fusion restored.** Models now
-  declare `xla_eval_sync_chunks`: TabR fuses 8 eval chunks per XLA graph
-  barrier (the 0.4.0 per-chunk barrier — added for ModernNCA's HBM safety —
-  cost TabR's chunked search its fusion: predict 47.8s → 85.6s at 345k);
-  ModernNCA keeps the strict per-chunk barrier.
+- **TabR TPU eval search: cross-chunk fusion restored on large corpora.**
+  Models now declare `xla_eval_sync_chunks`: TabR fuses 8 eval chunks per
+  XLA graph barrier when its corpus holds ≥100k candidates — measured on
+  TPU v5e at 345k rows: predict 86.1s → **48.4s (−44%)**, identical
+  predictions, no OOM (recovering the fusion the 0.4.0 per-chunk barrier
+  — added for ModernNCA's HBM safety — had cost it). Small corpora keep
+  per-chunk barriers (the fused mega-graph measured slower there);
+  ModernNCA is pinned at 1.
 - **ADR 0004:** no in-library TPU multi-device path (xmp.spawn rejected);
   the `TPU_VISIBLE_CHIPS` one-process-per-chip recipe remains the
   full-board story until TorchTPU is public.

@@ -217,3 +217,79 @@ no divergence reproduced at this scale/config
 ```
 
 WAVE E1 COMPLETE
+
+===================== WAVE E2 =====================
+# masaMLP TPU wave E2 report (0.5.0)
+branch: v0.5.0-tpu; started 2026-07-12 12:39:33 UTC
+
+## Section 1 — install + env
+
+```
+$ git clone -b v0.5.0-tpu --depth 1 ...
+Cloning into '/kaggle/working/repo'...
+[rc=0 5s]
+```
+
+```
+$ /usr/local/bin/python -m pip install --no-deps --force-reinstall ...
+
+[rc=0 6s]
+```
+
+```
+$ /usr/local/bin/python -c import torch, torch_xla, masamlp; print('torch', torch.__version__, 'torch_xla', torch_xla.__version__, 'masamlp', masamlp.__version__)
+torch 2.8.0+cpu torch_xla 2.8.0 masamlp 0.4.0
+[rc=0 28s]
+```
+
+## Section 8 — retrieval eval @345k (cold process per combo)
+
+```
+$ /usr/local/bin/python tpu_speed.py --retrieval-eval tabr 1 fp32
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tabr sync=1 predict=fp32                     fit   153.6s  predict(50000)  86.08s  rmse 0.1816  max|pred| 21.4
+tabr sync=1 predict=fp32                     [compiles=22]
+[rc=0 362s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --retrieval-eval tabr 8 fp32
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tabr sync=8 predict=fp32                     fit   151.3s  predict(50000)  48.39s  rmse 0.1816  max|pred| 21.4
+tabr sync=8 predict=fp32                     [compiles=7]
+[rc=0 269s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --retrieval-eval tabr 8 bf16
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tabr sync=8 predict=bf16                     fit   152.4s  predict(50000)  50.55s  rmse 0.1833  max|pred| 21.4
+tabr sync=8 predict=bf16                     [compiles=7]
+[rc=0 276s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --retrieval-eval tabr 1 bf16
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+tabr sync=1 predict=bf16                     fit   152.9s  predict(50000)  86.16s  rmse 0.1825  max|pred| 21.4
+tabr sync=1 predict=bf16                     [compiles=22]
+[rc=0 368s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --retrieval-eval modernnca 1 fp32
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+modernnca sync=1 predict=fp32                fit    69.1s  predict(50000)  20.72s  rmse 0.6547  max|pred| 23.5
+modernnca sync=1 predict=fp32                [compiles=22]
+[rc=0 132s]
+```
+
+```
+$ /usr/local/bin/python tpu_speed.py --retrieval-eval modernnca 1 bf16
+torch 2.8.0+cpu  torch_xla 2.8.0  backend=TPU
+modernnca sync=1 predict=bf16                fit    69.5s  predict(50000)  22.41s  rmse 0.6548  max|pred| 23.6
+modernnca sync=1 predict=bf16                [compiles=22]
+[rc=0 137s]
+```
+
+WAVE E2 COMPLETE

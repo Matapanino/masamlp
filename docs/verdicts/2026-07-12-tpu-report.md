@@ -75,12 +75,35 @@ ft_transformer collapse (rmse 0.20 → 3.18) needs something
 masamlp-specific; the upstream issue is deferred until a self-contained
 repro exists, and `compile=True` stays refused on XLA.
 
-## Retrieval eval @345k (wave E2)
+## Retrieval eval @345k (wave E2) — TabR fusion wins −44%
 
-*(pending — TabR eval-chunk fusion sync 1 vs 8 × predict fp32/bf16;
-ModernNCA OOM watch)*
+Cold process per combo; fit 3 epochs (bf16), then one predict over 50k
+rows against the 276k-candidate corpus:
+
+| combo | fit | predict(50k) | rmse | compiles |
+|---|---|---|---|---|
+| tabr sync=1, fp32 predict | 153.6s | 86.1s | 0.1816 | 22 |
+| **tabr sync=8, fp32 predict** | 151.3s | **48.4s** | 0.1816 | 7 |
+| tabr sync=8, bf16 predict | 152.4s | 50.6s | 0.1833 | 7 |
+| tabr sync=1, bf16 predict | 152.9s | 86.2s | 0.1825 | 22 |
+| modernnca sync=1, fp32 predict | 69.1s | 20.7s | 0.6547 | 22 |
+| modernnca sync=1, bf16 predict | 69.5s | 22.4s | 0.6548 | 22 |
+
+- The sync=1 rows replicate wave D (85.6s predict; modernnca 71.3s fit /
+  20.4s predict) — good baseline continuity.
+- **Fusing 8 eval chunks per barrier recovers the pre-barrier speed**
+  (wave C's unbarriered 47.8s) with *identical* rmse and no OOM.
+- But at wave E1's 40k corpus the same fusion made TabR's 200k-row predict
+  ~3× slower (5s-class → 14.4s) — the mega-graph loses when per-chunk
+  graphs are cheap, the same compile/size trade that sank `xla_fuse_steps`.
+  **Shipped policy: TabR fuses only at ≥100k candidates** (bracketed by
+  the 40k-loses / 276k-wins measurements); explicit
+  `model.xla_eval_sync_chunks = K` overrides.
+- bf16 prediction at scale is neutral (tabr +2s, modernnca +2s) at
+  equivalent rmse — consistent with wave E1 and with `cdist` being
+  fp32-listed under torch_xla's autocast.
 
 ## Quota spent
 
-Wave E1 ≈ 1.1 TPU-h; ~5 h of additional run-time was burned by the
+Waves E1+E2 ≈ 1.6 TPU-h; ~5 h of additional run-time was burned by the
 rollback-and-requeue cycles but did not count against quota.

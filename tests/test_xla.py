@@ -295,8 +295,10 @@ def test_amp_predict_retrieval_cache_dtype_xla(name, clf_data):
 
 
 def test_eval_sync_chunks_do_not_change_results_xla(clf_data):
-    # TabR fuses several eval chunks per barrier (xla_eval_sync_chunks=8);
-    # barrier placement must never change the predictions.
+    # TabR fuses several eval chunks per barrier on large corpora
+    # (xla_eval_sync_chunks); barrier placement must never change the
+    # predictions. The tiny test corpus resolves to per-chunk barriers, so
+    # the fused path is exercised through the override.
     from masamlp.classifier import MasaClassifier
 
     X, y, X_test, _ = clf_data
@@ -310,9 +312,9 @@ def test_eval_sync_chunks_do_not_change_results_xla(clf_data):
         random_state=0,
     )
     m = MasaClassifier(**kw).fit(X, y)
-    assert m.model_.xla_eval_sync_chunks == 8
-    p_fused = m.predict_proba(X_test)
-    m.model_.xla_eval_sync_chunks = 1
-    m.model_.invalidate_eval_cache()
+    assert m.model_.xla_eval_sync_chunks == 1  # small corpus: no fusion
     p_step = m.predict_proba(X_test)
+    m.model_.xla_eval_sync_chunks = 8  # force the fused path
+    m.model_.invalidate_eval_cache()
+    p_fused = m.predict_proba(X_test)
     np.testing.assert_allclose(p_fused, p_step, atol=1e-6)

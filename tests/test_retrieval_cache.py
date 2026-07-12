@@ -163,6 +163,18 @@ def test_grad_enabled_eval_does_not_touch_cache(name):
     assert model._eval_cache is None
 
 
+def test_tabr_eval_sync_policy_is_corpus_sized(monkeypatch):
+    # Fusing eval chunks only pays on large corpora (measured on TPU v5e:
+    # -44% predict at 276k candidates, ~3x slower at 40k) — the policy is
+    # corpus-conditional, with an explicit override as the escape hatch.
+    model = _make_model("tabr", 3, 3)
+    assert model.xla_eval_sync_chunks == 1  # tiny corpus
+    monkeypatch.setattr(type(model), "_EVAL_FUSION_MIN_CANDIDATES", 4)
+    assert model.xla_eval_sync_chunks == 8  # now "large"
+    model.xla_eval_sync_chunks = 3  # explicit override wins
+    assert model.xla_eval_sync_chunks == 3
+
+
 @pytest.mark.parametrize("name", ["tabr", "modernnca"])
 def test_eval_cache_keyed_by_autocast_dtype(name):
     # A cache built under bf16 prediction (amp_predict) must not serve a

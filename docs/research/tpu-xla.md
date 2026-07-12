@@ -306,6 +306,16 @@ are cold-cache, one measurement per process.
    (rmse 0.20→3.18) therefore needs something masamlp-specific (feature
    tokenizer / schedule / param groups) — upstream issue deferred until a
    self-contained repro exists; `compile=True` stays refused on XLA.
+7. **Eval-chunk fusion is corpus-size-conditional (wave E2, 345k).** TabR
+   with a barrier every 8 eval chunks: predict 86.1s → 48.4s (−44%),
+   identical rmse, no OOM, compiles 22 → 7 — recovering wave C's
+   unbarriered 47.8s. But at wave E1's 40k corpus the same fusion ran ~3x
+   slower (5s-class → 14.4s): when per-chunk graphs are cheap the fused
+   mega-graph loses, the same compile/size trade as (1). Shipped policy:
+   TabR fuses only at ≥100k candidates (property, override-able);
+   ModernNCA stays pinned at 1 (HBM). bf16 predict at scale: neutral,
+   rmse-equivalent (cdist is fp32-listed under XLA autocast — the distance
+   matmul never went bf16).
 
 ## Sources
 

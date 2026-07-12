@@ -90,9 +90,12 @@ enough. Design record: ADR 0002/0003/0004; survey:
   different `K`, so changing `K` perturbs results the way changing
   `batch_size` does (RNG-free training is `K`-invariant; CI asserts this
   on XLA:CPU). Prediction-side analog: models declare
-  `xla_eval_sync_chunks` (ModernNCA stays at 1 because its streamed
-  full-corpus eval graphs are HBM-heavy — 50.6 GiB demanded at a 276k
-  corpus when unbarriered, measured).
+  `xla_eval_sync_chunks` — TabR fuses 8 eval chunks per barrier **when its
+  corpus holds ≥100k candidates** (measured at 276k: predict 86.1s → 48.4s,
+  identical values, no OOM; at a 40k corpus the fused mega-graph is ~3×
+  slower, so small corpora keep per-chunk barriers), while ModernNCA is
+  pinned at 1 because its streamed full-corpus eval graphs are HBM-heavy —
+  50.6 GiB demanded at a 276k corpus when unbarriered, measured.
 - `amp="auto"` means **bf16 autocast** (TPUs are bf16-native; no GradScaler
   exists on this path; fp16 is never used; autocast wraps the training step
   only). Per-model `amp_auto` policies are device-aware: the retrieval
