@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-07-13)
 
 TPU optimization round 2 (follow-ups from the 0.4.0 verification; design:
 ADR 0003/0004, measurements: docs/verdicts/).
