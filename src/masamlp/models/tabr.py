@@ -48,6 +48,29 @@ def _block(
 
 
 class TabR(RetrievalBase):
+    # Above this corpus size, several eval chunks fuse into one XLA program
+    # (barrier every 8 chunks) to win back the cross-chunk optimization the
+    # 0.4.0 per-chunk barrier cost: measured on TPU v5e at a 276k corpus,
+    # predict 86.1s -> 48.4s, identical values, no OOM (the graphs are
+    # HBM-light). Small corpora keep per-chunk barriers: there each chunk's
+    # search graph is cheap and the fused mega-graph executes *slower*
+    # (40k corpus: 5s -> 14s, measured) — the same compile/size trade that
+    # sank xla_fuse_steps. ModernNCA is pinned at 1 (HBM-heavy graphs).
+    _EVAL_FUSION_MIN_CANDIDATES = 100_000
+
+    @property
+    def xla_eval_sync_chunks(self) -> int:
+        if self._eval_sync_override is not None:
+            return self._eval_sync_override
+        if not self.has_candidates:
+            return 1
+        return 8 if self.cand_y.shape[0] >= self._EVAL_FUSION_MIN_CANDIDATES else 1
+
+    @xla_eval_sync_chunks.setter
+    def xla_eval_sync_chunks(self, value: int) -> None:
+        # Escape hatch (also used by benchmarks to measure both regimes).
+        self._eval_sync_override = value
+
     def __init__(
         self,
         embedding: FeatureEmbedding,
@@ -66,6 +89,7 @@ class TabR(RetrievalBase):
         super().__init__()
         if out_dim > 1 and n_label_classes is None:
             raise ValueError("tabr does not support multi-output regression")
+        self._eval_sync_override: int | None = None
         self.embedding = embedding
         self.context_size = context_size
         self.candidate_chunk_size = candidate_chunk_size
@@ -171,9 +195,10 @@ class TabR(RetrievalBase):
         cache_usable = self._eval_cache_usable()
         with torch.no_grad():
             if cache_usable:
-                if self._eval_cache is None:
-                    self._eval_cache = self._candidate_keys()
-                cand_k = self._eval_cache
+                cand_k = self._eval_cache_get()
+                if cand_k is None:
+                    cand_k = self._candidate_keys()
+                    self._eval_cache_set(cand_k)
             else:
                 cand_k = self._candidate_keys()
             exclude = self.current_batch_indices if excluding_self else None

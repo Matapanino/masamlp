@@ -145,9 +145,9 @@ def test_eval_batch_size_reaches_training_eval_and_predict(monkeypatch, reg_data
     seen: list[int] = []
     orig = trainer_mod.predict_transformed
 
-    def spy(model, data, transform, batch_size=8192):
+    def spy(model, data, transform, batch_size=8192, autocast_dtype=None):
         seen.append(batch_size)
-        return orig(model, data, transform, batch_size)
+        return orig(model, data, transform, batch_size, autocast_dtype=autocast_dtype)
 
     monkeypatch.setattr(trainer_mod, "predict_transformed", spy)
     monkeypatch.setattr(sklearn_mod, "predict_transformed", spy)

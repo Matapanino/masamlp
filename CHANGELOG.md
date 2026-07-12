@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.0 (2026-07-13)
+
+TPU optimization round 2 (follow-ups from the 0.4.0 verification; design:
+ADR 0003/0004, measurements: docs/verdicts/).
+
+- **`xla_fuse_steps`** — fuse K optimizer steps into one XLA program
+  (default 1 = the 0.4.0 one-barrier-per-step behavior). Measured verdict
+  (TPU v5e): the default stays 1 — fusing buys ~20% steady-state per-step
+  overhead but XLA compile time grows super-linearly with the fused graph
+  and dominates at realistic fit lengths; shipped as a documented escape
+  hatch for very long fits. `torch_xla.experimental.scan` (the in-graph
+  loop that would amortize compilation) is blocked on torch_xla 2.8 —
+  `torch.func.grad` fails inside the scan body. Deterministic per K; a
+  different K gives training-time device RNG (dropout, retrieval sampling)
+  a different — equally random — stream, like changing `batch_size` does.
+  RNG-free training is K-invariant. No effect on non-XLA devices.
+- **`amp_predict`** — opt-in bf16 autocast for evaluation and prediction
+  (training `amp` has never covered them). XLA/TPU, bf16-capable CUDA, and
+  CPU; fp16 never. Retrieval models key their eval-encoding cache by the
+  ambient autocast dtype so alternating fp32/bf16 predicts stay correct,
+  and ModernNCA's streamed eval softmax now accumulates in fp32 (a no-op
+  for the default fp32 path). Verified on TPU v5e: rmse-equivalent on all
+  six benchmark models; speed-neutral (fp32 prediction is already fast) —
+  a memory/marginal knob, not a speedup.
+- **TabR TPU eval search: cross-chunk fusion restored on large corpora.**
+  Models now declare `xla_eval_sync_chunks`: TabR fuses 8 eval chunks per
+  XLA graph barrier when its corpus holds ≥100k candidates — measured on
+  TPU v5e at 345k rows: predict 86.1s → **48.4s (−44%)**, identical
+  predictions, no OOM (recovering the fusion the 0.4.0 per-chunk barrier
+  — added for ModernNCA's HBM safety — had cost it). Small corpora keep
+  per-chunk barriers (the fused mega-graph measured slower there);
+  ModernNCA is pinned at 1.
+- **ADR 0004:** no in-library TPU multi-device path (xmp.spawn rejected);
+  the `TPU_VISIBLE_CHIPS` one-process-per-chip recipe remains the
+  full-board story until TorchTPU is public.
+- Benchmarks: step-fusion sweep/parity modes, bf16-predict matrix,
+  tab_transformer TPU profile, a torch_xla `scan` step-loop prototype, and
+  a masamlp-free openxla-backend inaccuracy repro for the upstream report.
+- **Docs:** Colab TPU (v5e-1) verified end to end — the runtime preinstalls
+  torch/torch_xla, so `pip install masamlp` suffices there. devices.md
+  documents that torch_xla 2.9 dropped TPU fp32 matmuls to one-pass bf16 by
+  default (0.4.0's bitwise TPU↔CPU prediction parity was a 2.8 artifact)
+  and the `torch_xla.backends.set_mat_mul_precision` recipe — which must
+  run before the first fit in the process — plus a TPU batch/lr tuning
+  note.
+
 ## 0.4.0 (2026-07-11)
 
 - **TPU / XLA support (experimental).** `device="tpu"` / `"xla"` /

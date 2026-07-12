@@ -17,7 +17,12 @@ import torch
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 
-from masamlp.core.device import module_device, resolve_device, resolve_device_plan
+from masamlp.core.device import (
+    module_device,
+    resolve_device,
+    resolve_device_plan,
+    resolve_predict_amp,
+)
 from masamlp.core.metrics import BaseMetric, get_metric, make_metric
 from masamlp.core.objectives import BaseObjective, apply_transform, make_objective
 from masamlp.core.trainer import (
@@ -64,6 +69,8 @@ class BaseMasaModel(BaseEstimator):
         candidate_budget: int | None = None,
         device: str = "auto",
         amp: str | bool = "auto",
+        amp_predict: str | bool = False,
+        xla_fuse_steps: int = 1,
         compile: bool = False,
         n_threads: int | None = None,
         verbose: int = 0,
@@ -94,6 +101,8 @@ class BaseMasaModel(BaseEstimator):
         self.candidate_budget = candidate_budget
         self.device = device
         self.amp = amp
+        self.amp_predict = amp_predict
+        self.xla_fuse_steps = xla_fuse_steps
         self.compile = compile
         self.n_threads = n_threads
         self.verbose = verbose
@@ -284,6 +293,8 @@ class BaseMasaModel(BaseEstimator):
                 ema_decay=self.ema_decay,
                 device=self.device if device is None else device,
                 amp=self.amp,
+                amp_predict=self.amp_predict,
+                xla_fuse_steps=self.xla_fuse_steps,
                 compile=self.compile,
                 early_stopping_rounds=self.early_stopping_rounds,
                 random_state=seed,
@@ -420,6 +431,7 @@ class BaseMasaModel(BaseEstimator):
                 data,
                 lambda raw: apply_transform(raw, transform),
                 self.eval_batch_size,
+                amp_predict=self.amp_predict,
             )
         else:
             device = resolve_device(self.device)
@@ -428,6 +440,7 @@ class BaseMasaModel(BaseEstimator):
             elif device.index is None and device.type == "mps":
                 device = torch.device("mps", 0)
             data = data.to(device)
+            autocast_dtype = resolve_predict_amp(self.amp_predict, device)
             preds = []
             for model in members:
                 if module_device(model) != device:
@@ -441,6 +454,7 @@ class BaseMasaModel(BaseEstimator):
                         data,
                         lambda raw: apply_transform(raw, transform),
                         self.eval_batch_size,
+                        autocast_dtype=autocast_dtype,
                     )
                 )
         # Ensemble average on the transformed scale (probabilities for

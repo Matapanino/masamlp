@@ -36,6 +36,21 @@ import torch
 from torch import Tensor, nn
 
 
+def _ambient_autocast_dtype(device_type: str) -> torch.dtype | None:
+    """The active autocast dtype for ``device_type``, or ``None`` outside an
+    autocast region. Falls back to the pre-2.4 cuda/cpu-specific API."""
+    try:
+        if torch.is_autocast_enabled(device_type):
+            return torch.get_autocast_dtype(device_type)
+        return None
+    except TypeError:  # torch < 2.4: no device-typed overload
+        if device_type == "cuda" and torch.is_autocast_enabled():
+            return torch.get_autocast_gpu_dtype()
+        if device_type == "cpu" and torch.is_autocast_cpu_enabled():
+            return torch.get_autocast_cpu_dtype()
+        return None
+
+
 class RetrievalBase(nn.Module):
     wants_batch_indices = True
     # KI-010 is a CUDA finding: autocast around the cdist/topk search is
@@ -52,8 +67,11 @@ class RetrievalBase(nn.Module):
         super().__init__()
         self.current_batch_indices: Tensor | None = None
         # Payload is subclass-defined (TabR: candidate keys; ModernNCA:
-        # (encoded corpus, label representation)).
+        # (encoded corpus, label representation)). The dtype key records the
+        # autocast state the payload was encoded under — a cache built under
+        # bf16 prediction must not serve an fp32 predict (and vice versa).
         self._eval_cache: Any = None
+        self._eval_cache_dtype: torch.dtype | None = None
         self.register_load_state_dict_post_hook(
             lambda module, incompatible_keys: module.invalidate_eval_cache()
         )
@@ -86,6 +104,25 @@ class RetrievalBase(nn.Module):
     # ------------------------------------------------------------------ #
     def invalidate_eval_cache(self) -> None:
         self._eval_cache = None
+        self._eval_cache_dtype = None
+
+    def _encode_dtype_now(self) -> torch.dtype:
+        """The dtype the encoder produces under the ambient autocast state
+        (bf16 inside an ``amp_predict`` region, the parameter dtype outside)."""
+        param = next(self.parameters())
+        ambient = _ambient_autocast_dtype(param.device.type)
+        return ambient if ambient is not None else param.dtype
+
+    def _eval_cache_get(self) -> Any:
+        """The cached payload, dropping it first when the ambient autocast
+        state no longer matches the one it was built under."""
+        if self._eval_cache is not None and self._eval_cache_dtype != self._encode_dtype_now():
+            self.invalidate_eval_cache()
+        return self._eval_cache
+
+    def _eval_cache_set(self, payload: Any) -> None:
+        self._eval_cache = payload
+        self._eval_cache_dtype = self._encode_dtype_now()
 
     def _eval_cache_usable(self) -> bool:
         """Cache only in eval mode and only where autograd cannot observe it

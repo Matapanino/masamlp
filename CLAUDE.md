@@ -70,3 +70,19 @@ differentiator gate is `tests/test_sample_weight.py`,
 `tests/test_docs_parameters.py` enforces that every estimator/model
 constructor parameter is documented in `docs/parameters.md` — new parameters
 need a doc entry in the same change.
+
+## Release flow (delegated)
+
+The user has standing-authorized Claude to run the full release when the
+work is judged useful and verified — no per-release confirmation needed
+(granted 2026-07-13). The flow, in order, no steps skipped:
+
+1. Version bumped in `pyproject.toml` + `src/masamlp/__init__.py`;
+   CHANGELOG gets the release date.
+2. PR CI green (including `xla-smoke`) → merge the PR.
+3. **Wait for CI green on the merge commit on main** — the version tag
+   publishes even if that CI is still running or failed.
+4. Tag `vX.Y.Z` on the merge commit, push the tag — `publish.yml` does the
+   PyPI release via trusted publishing (no local tokens).
+5. Confirm the publish workflow succeeded and the version is on PyPI;
+   prune the release branch.

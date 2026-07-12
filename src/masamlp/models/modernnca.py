@@ -55,6 +55,12 @@ class _MLPBlock(nn.Module):
 
 
 class ModernNCA(RetrievalBase):
+    # Every eval chunk's graph streams the full corpus (B x chunk exp/softmax
+    # intermediates per candidate block); fusing chunks multiplies the live
+    # set — the 0.4.0 measurement hit 50.6 GiB of 16 GiB HBM at a 276k
+    # corpus — so ModernNCA keeps the strict one-barrier-per-chunk policy.
+    xla_eval_sync_chunks = 1
+
     def __init__(
         self,
         embedding: FeatureEmbedding,
@@ -119,10 +125,11 @@ class ModernNCA(RetrievalBase):
         BatchNorm uses running stats, so chunked encoding is exact) and cached
         across query batches. Built under no_grad — the cache gate only admits
         no-autograd contexts, and the cache must never carry a graph."""
-        if self._eval_cache is None:
+        cached = self._eval_cache_get()
+        if cached is None:
             with torch.no_grad():
                 dtype = self.encoder.weight.dtype
-                self._eval_cache = (
+                cached = (
                     torch.cat(
                         [
                             self._encode(
@@ -133,22 +140,30 @@ class ModernNCA(RetrievalBase):
                     ),
                     self._label_repr(self.cand_y, dtype),
                 )
-        return self._eval_cache
+                self._eval_cache_set(cached)
+        return cached
 
     def _aggregate_streamed(self, z: Tensor) -> Tensor:
         """softmax(-cdist/T) @ y_repr over the whole corpus, streamed in
         ``candidate_chunk_size`` blocks with a running max so peak memory is
-        B x chunk instead of the B x N matrix that OOMs at scale."""
+        B x chunk instead of the B x N matrix that OOMs at scale.
+
+        The running softmax accumulates in fp32 regardless of the compute
+        dtype: under bf16 prediction the distance matmul stays low-precision
+        (the MXU win) but summing exp-weights over hundreds of chunks in
+        bf16's 8-bit mantissa would visibly corrupt the aggregation. A no-op
+        for the default fp32 path."""
         cand_z, y_repr = self._encoded_candidates()
-        running_max = torch.full((z.shape[0],), -torch.inf, device=z.device, dtype=z.dtype)
-        num = torch.zeros(z.shape[0], y_repr.shape[1], device=z.device, dtype=z.dtype)
-        den = torch.zeros(z.shape[0], device=z.device, dtype=z.dtype)
+        acc = torch.float32
+        running_max = torch.full((z.shape[0],), -torch.inf, device=z.device, dtype=acc)
+        num = torch.zeros(z.shape[0], y_repr.shape[1], device=z.device, dtype=acc)
+        den = torch.zeros(z.shape[0], device=z.device, dtype=acc)
         for start, stop in self._chunk_bounds(cand_z.shape[0]):
-            scores = -torch.cdist(z, cand_z[start:stop], p=2) / self.temperature
+            scores = (-torch.cdist(z, cand_z[start:stop], p=2) / self.temperature).to(acc)
             new_max = torch.maximum(running_max, scores.max(dim=1).values)
             weights = torch.exp(scores - new_max[:, None])
             rescale = torch.exp(running_max - new_max)  # 0 on the first chunk
-            num = num * rescale[:, None] + weights @ y_repr[start:stop]
+            num = num * rescale[:, None] + weights @ y_repr[start:stop].to(acc)
             den = den * rescale + weights.sum(dim=1)
             running_max = new_max
         return num / den[:, None]

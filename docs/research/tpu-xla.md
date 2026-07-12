@@ -219,6 +219,104 @@ study (Kalamkar et al. 2019 [19]).
    cross-chunk fusion (predict 47.8s → 85.6s), accepted: correctness of
    ModernNCA eval over speed of an already-documented slow path.
 
+## 10. Colab v5e-1 verification + the torch_xla 2.9 matmul-precision change
+## (2026-07-12, 0.5.0 cycle)
+
+1. **Colab TPU v5e-1 works end to end** (billable CLI pool; ~20 min
+   session): the runtime ships python 3.12.13 + torch 2.9.0+cpu +
+   torch_xla 2.9.0 preinstalled (no install line needed, unlike the docs'
+   Cloud-VM guidance), 24-vCPU host, `TPU_ACCELERATOR_TYPE=v5e-1`.
+   `resolve_device("tpu"/"xla"/"auto")` → xla:0; resnet fit/predict,
+   save→CPU-load roundtrip, `xla_fuse_steps=8` fit and `amp_predict=True`
+   all ran (branch v0.5.0-tpu).
+2. **torch_xla 2.9 changed the TPU fp32 matmul default** from full
+   precision to one-pass bf16. Measured on v5e-1 (512×512, N(0,1),
+   CPU-vs-TPU max|diff|): as-shipped 2.6e-1; after
+   `torch_xla.backends.set_mat_mul_precision("high")` 1.4e-3 (bf16
+   3-pass); `"highest"` 4.6e-5 (fp32). Model-level: fp32-trained resnet
+   predictions deviated from their CPU-loaded copy by ~3e-2 — versus the
+   **bitwise** parity 0.4.0 measured on torch_xla 2.8 (wave A §7.3), which
+   was therefore a 2.8-default artifact, not a durable contract.
+3. **The precision knob must be set before the first compilation in the
+   process**: later calls are silently ignored for already-compiled graph
+   shapes (the compile cache keys on the graph, not the precision setting
+   — torch_xla itself warns about this). An in-session probe that flipped
+   the setting after a warm-up matmul measured no change; per-fresh-process
+   probes show the real effect. Same family as the §9.1 benchmark-ordering
+   trap: on XLA, *process state at first compile wins*.
+4. `torch.set_float32_matmul_precision` is not wired to the XLA backend
+   (reports "highest" while the TPU runs bf16 matmuls). Docs now carry the
+   `torch_xla.backends` recipe; masaMLP does not override the platform
+   default (no hidden global state).
+5. RNG placement: the XLA device RNG seed advances per graph *execution*,
+   so `xla_fuse_steps` (barrier placement) selects a different — equally
+   seeded-deterministic — stream for training-time device RNG (dropout,
+   retrieval sampling). Found by the XLA:CPU CI parity test (K=4 vs K=1
+   diverged ~2% on realmlp with scheduled dropout; RNG-free lnn is
+   K-invariant at 1e-6). Contract documented as batch_size-like: same
+   seed + same K ⇒ same model.
+
+## 11. Wave E findings (Kaggle v5e-8, 2026-07-12 — the 0.5.0 measurements)
+
+Method note: the pool was congested (Saturday post-quota-reset; batch runs
+initially cycled COMPLETE→rollback→requeue without saving — output was
+recovered by downloading inside the short COMPLETE window). All rows below
+are cold-cache, one measurement per process.
+
+1. **Step fusion (`xla_fuse_steps`) loses at tabular scale — compile cost
+   eats the dispatch savings.** Verdict configs, amp=auto, batch 1024,
+   fit seconds cold (K=1 / 8 / 32): resnet 48.5 / 102.0 / 161.8; realmlp
+   71.0 / 99.4 / 150.5; tab_transformer 76.5 / 417.5 / 704.5. XLA
+   compilation grows super-linearly with the unrolled K-step graph and
+   dwarfs the ~20% steady-state per-step saving the fusion really does buy
+   (prototype MLP, epoch steady-state: K=1 0.165s vs K=8 0.13s, bitwise
+   param parity without dropout). Fusion could only pay for very long fits
+   (roughly ≥256 epochs at resnet scale); the default stays 1 and the
+   parameter is documented as a measured non-win.
+2. **`scan` over training steps is blocked on torch_xla 2.8**:
+   `torch.func.grad` inside the scan body fails AOTAutograd tracing
+   ("element 19 of tensors does not require grad"). The in-graph While loop
+   — the approach that would amortize compilation — needs either upstream
+   support or hand-derived backward; revisit on TorchTPU.
+3. **The honest 0.4.0 baseline was partly warm.** Cold K=1 rows (resnet fit
+   48.5s, first-predict 19.3s with compiles=33) show the 0.4.0 verdict
+   table's small-model bf16 rows (34.8s, predict 0.80s, compiles=4) rode
+   the same-process cache the wave-C correction only fixed for retrieval
+   rows. Steady-state predict times today (fp32: resnet 0.81s, realmlp
+   0.18s, ft 1.38s, tab_transformer 2.38s) match the 0.4.0 "bf16 predict"
+   column — prediction was always fp32 and amp-independent; the column
+   measured warmth, not bf16.
+4. **bf16 prediction (`amp_predict`) is accuracy-safe and speed-neutral on
+   v5e** (steady-state, 200k rows): resnet 0.81→0.67s, tab_transformer
+   2.38→2.03s, realmlp/ft flat, tabr 14.4→14.8s, modernnca 2.37→2.68s;
+   Δrmse ≤ 0.003 everywhere, max|pred diff| 0.06–0.29 (bf16 scale). Ships
+   as a correctness-verified opt-in, sold for memory/marginal gains — not
+   as a speedup.
+5. **tab_transformer's TPU tax is the attention backward.** Per-section
+   profile (batch 1024, bf16, per-iter barrier): full train step 100.3
+   ms/iter vs forward-only 8.1 (blocks 7.1, embedding 0.7, head 0.5) —
+   the backward+optimizer is ~92% of the step, ~11x the forward, vs the
+   usual 2-3x. `nn.MultiheadAttention` with d_token 32 / head_dim 4 lowers
+   to MXU-hostile small ops in reverse mode. Candidate fix (roadmap): an
+   SDPA-based block or width guidance; no fallbacks and no recompiles — it
+   is pure lowering quality.
+6. **The openxla miscompile did not reproduce in minimal form**: {mlp,
+   residual_ln, tiny-attention} × {fp32, bf16} × {lazy, openxla} all match
+   (and openxla was up to ~1.6x faster). Wave B's ft_transformer collapse
+   (rmse 0.20→3.18) therefore needs something masamlp-specific (feature
+   tokenizer / schedule / param groups) — upstream issue deferred until a
+   self-contained repro exists; `compile=True` stays refused on XLA.
+7. **Eval-chunk fusion is corpus-size-conditional (wave E2, 345k).** TabR
+   with a barrier every 8 eval chunks: predict 86.1s → 48.4s (−44%),
+   identical rmse, no OOM, compiles 22 → 7 — recovering wave C's
+   unbarriered 47.8s. But at wave E1's 40k corpus the same fusion ran ~3x
+   slower (5s-class → 14.4s): when per-chunk graphs are cheap the fused
+   mega-graph loses, the same compile/size trade as (1). Shipped policy:
+   TabR fuses only at ≥100k candidates (property, override-able);
+   ModernNCA stays pinned at 1 (HBM). bf16 predict at scale: neutral,
+   rmse-equivalent (cdist is fp32-listed under XLA autocast — the distance
+   matmul never went bf16).
+
 ## Sources
 
 1. https://github.com/pytorch/xla/releases

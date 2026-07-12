@@ -37,17 +37,18 @@
   columns are present.
 - (Shipped in 0.3.0: TabR inference-time key caching, ModernNCA chunked
   eval scoring, per-model AMP auto-policy, multi-GPU member sharding.)
-- **TPU follow-ups** (0.4.0 shipped single-device TPU/XLA; verdict
-  2026-07-10, research/tpu-xla.md §7–9): fuse small-batch training steps
-  (`torch_xla.experimental.scan` / multi-step barriers) to cut the
-  per-step dispatch floor that makes resnet/realmlp fits dispatch-bound;
-  TabR's TPU eval search (topk over barrier-separated chunks, 85.6s vs
-  L4 3.1s at 345k); profile tab_transformer on TPU (5x slower than L4);
-  optional bf16 prediction (autocast currently wraps training only);
-  in-library TPU member sharding (blocked: torch_xla's graph executor is
-  not thread-safe across devices — revisit on TorchTPU or via opt-in
-  multiprocessing); diagnose the openxla-backend training inaccuracy
-  upstream; verify Colab v5e-1/v6e-1 (docs guidance exists, unverified).
+- **TPU follow-ups** (0.4.0 shipped single-device TPU/XLA; 0.5.0 addressed
+  the list — see CHANGELOG and verdicts/2026-07-12): still open after the
+  0.5.0 measurements: (a) in-library TPU member sharding — decided against
+  for now in ADR 0004; re-evaluate when TorchTPU is public or torch_xla's
+  executor becomes thread-safe across devices; (b) step-loop-in-graph via
+  `scan` — blocked on torch_xla 2.8 (`torch.func.grad` fails in the scan
+  body), the only remaining route to the small-batch dispatch floor since
+  unrolled K-step fusion measured as a compile-cost loss; (c) an SDPA-based
+  attention block for `tab_transformer` (KI-013 — the TPU attention
+  backward is ~92% of its step); (d) a self-contained repro of the openxla
+  dynamo miscompile (minimal archs did not reproduce it) before filing
+  upstream.
 
 ## Models
 
