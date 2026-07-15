@@ -222,6 +222,18 @@ class MulticlassSoftmax(BaseObjective):
         return torch.from_numpy(np.asarray(y, dtype=np.int64))
 
     def per_sample_loss(self, y_true: Tensor, raw_pred: Tensor) -> Tensor:
+        if raw_pred.ndim == 3:
+            # Weight-shared ensembles (TabM) emit per-member logits (n, k, K):
+            # train each member independently and average the losses
+            # (mean-of-per-member cross-entropy). Inert for every 2D model.
+            n, k, _ = raw_pred.shape
+            per_member = F.cross_entropy(
+                raw_pred.transpose(1, 2),
+                y_true.unsqueeze(1).expand(n, k),
+                reduction="none",
+                label_smoothing=self.label_smoothing,
+            )  # (n, k)
+            return per_member.mean(dim=1)
         return F.cross_entropy(
             raw_pred, y_true, reduction="none", label_smoothing=self.label_smoothing
         )
