@@ -96,6 +96,11 @@ Built-in metrics (string values):
 | `ens_mode` | `"loop"` | `"loop"` trains members sequentially (sharded across GPUs when several are visible). `"vectorized"` trains all members in one vmapped forward/backward (`torch.func`) for a ~k× speedup — BatchNorm-free models only (`grn`, `realmlp`, `ft_transformer`, `gandalf`, `lnn`). |
 | `candidate_budget` | `None` | For `tabr` / `modernnca`: bounds the retrieval corpus with a seeded, class-stratified subsample of at most this many training rows (memory/compute control on large data). No-op for other models. |
 
+`model="tabm"` adds a second, **inner** ensemble axis: `k` weight-shared
+members inside one model (see the [`tabm` section](#tabm--tabm-parameter-efficient-deep-ensemble)).
+It is orthogonal to `n_ens` and the two compose — `n_ens=m` trains `m`
+independent TabM models for `m·k` members in total, in any `ens_mode`.
+
 ### Hardware and execution
 
 | Parameter | Default | Meaning |
@@ -158,6 +163,26 @@ does.
 paper's baseline configuration (Gorishniy et al. 2021, arXiv:2106.11959).
 Regularize with `dropout1` first; `dropout2` stays 0 in the reference
 defaults.
+
+### `tabm` — TabM (parameter-efficient deep ensemble)
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `k` | `32` | Ensemble members. All members share the embedding and the MLP backbone; each gets its own multiplicative adapter on the embedding and its own output head, so the parameter cost stays ~1× a single MLP. `k=1` is a plain MLP. |
+| `d` | `512` | Backbone width. |
+| `n_blocks` | `3` | Backbone depth (Linear → ReLU → Dropout blocks). |
+| `dropout` | `0.1` | Dropout after every backbone activation. |
+| `adapter_std` | `0.5` | Std of the per-member adapter init `N(1, adapter_std)`: members start near the single model and diverge during training (masaMLP's init — the paper's per-layer ±1 sign adapters measured *worse* than a single model here and were rejected). |
+
+**Sizing notes.** Defaults are the paper's reference configuration
+(Gorishniy et al. 2024, arXiv:2410.24210; the TabM-mini structure). The `k`
+members train as independent predictors on every row — every objective
+(including custom ones) and `sample_weight` work unchanged — and
+predictions are averaged on the probability/value scale. Early stopping
+monitors the ensemble-average metric (per-member stopping is undefined on
+shared weights). `k` is an inner, weight-shared axis and composes with the
+outer seed ensemble `n_ens`. Pairs well with `num_embedding="plr-lite"`
+(the paper's TabM†).
 
 ### `realmlp` — RealMLP-TD-S
 

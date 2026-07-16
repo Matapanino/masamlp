@@ -7,7 +7,10 @@ gradient clipping, schedulers, per-epoch evaluation, and early stopping with
 best-epoch weight restoration.
 
 The loss reduction contract: objectives return per-sample losses and the
-trainer computes ``(loss * w).sum() / w.sum()`` — see core/objectives.py.
+trainer computes ``(loss * w).sum() / w.sum()`` (:func:`weighted_loss`).
+Models may emit per-member outputs ``(n, k, out)`` — a weight-shared inner
+ensemble (TabM); the members flatten into rows before the objective runs,
+so objectives never see a member dim — see core/objectives.py.
 """
 
 from __future__ import annotations
@@ -120,6 +123,26 @@ class EarlyStopper:
     @property
     def should_stop(self) -> bool:
         return self._bad_epochs >= self.patience
+
+
+def weighted_loss(
+    objective: BaseObjective, y: Tensor, raw: Tensor, weight: Tensor | None
+) -> Tensor:
+    """The trainer-owned reduction ``(loss * w).sum() / w.sum()``. 3D raw
+    ``(n, k, out)`` is a weight-shared inner ensemble's per-member output:
+    members flatten into rows and ``y``/``weight`` repeat per member, so the
+    objective keeps its per-sample ``(n,)`` contract (customs included) and
+    the result equals the mean over members of the per-member weighted
+    losses."""
+    if raw.ndim == 3:
+        n, k, out_dim = raw.shape
+        raw = raw.reshape(n * k, out_dim)
+        y = y.repeat_interleave(k, dim=0)
+        weight = None if weight is None else weight.repeat_interleave(k, dim=0)
+    loss_i = objective.per_sample_loss(y, raw)
+    if weight is not None:
+        return (loss_i * weight).sum() / weight.sum()
+    return loss_i.mean()
 
 
 def predict_transformed(
@@ -374,11 +397,7 @@ class Trainer:
         def train_step(step_model: nn.Module, batch: TabularData) -> Tensor:
             with torch.autocast(device.type, dtype=amp_dtype, enabled=amp_enabled):
                 raw = step_model(batch.x_num, batch.x_cat)
-                loss_i = objective.per_sample_loss(batch.y, raw.float())
-                if batch.weight is not None:
-                    loss = (loss_i * batch.weight).sum() / batch.weight.sum()
-                else:
-                    loss = loss_i.mean()
+                loss = weighted_loss(objective, batch.y, raw.float(), batch.weight)
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             if config.grad_clip is not None:

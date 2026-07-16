@@ -9,6 +9,18 @@ the TPU/XLA design session (ADR 0002/0003); grows as designs do.
   masaMLP different from pytabkit/pytorch_tabular: `test_sample_weight.py`,
   `test_custom_objective.py`, `test_custom_metric.py`. Any new device or
   execution mode must pass them unchanged.
+- **Inner ensemble (the `(n, k, out)` contract)** — a weight-shared
+  ensemble living *inside one model* (ADR 0005): `forward` returns
+  per-member outputs `(n, k, out)`; the trainer flattens members into rows
+  for the loss (`weighted_loss`), and `apply_transform` averages members on
+  the prediction scale. Orthogonal to the outer `n_ens` axis; the two
+  compose to `n_ens·k` members. `tabm` is the built-in example; any
+  registered model opts in by shape alone.
+- **Member (outer vs inner)** — an *outer* member (`n_ens`) is an
+  independent model with its own weights, early stopping, and best-epoch
+  restore; an *inner* member (`k`, inner ensemble) shares the backbone with
+  its siblings, so early stopping monitors only the ensemble-average metric
+  (per-member restore is ill-defined on shared weights).
 - **Member sharding** — the 0.3.0 multi-device strategy: ensemble members
   are distributed round-robin across devices and trained concurrently, one
   worker thread per device (`core/parallel.py`). Member parallelism, not

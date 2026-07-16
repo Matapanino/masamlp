@@ -52,6 +52,7 @@ builds on.
 | name | source | notes |
 |---|---|---|
 | `resnet` | Gorishniy et al. 2021 (arXiv:2106.11959) | default; strong baseline |
+| `tabm` | Gorishniy et al. 2024 (arXiv:2410.24210) | parameter-efficient deep ensemble: `k` members share one MLP backbone (TabM-mini) and predictions are averaged — works with every objective, `sample_weight`, and custom losses |
 | `realmlp` | Holzmüller et al. 2024 (arXiv:2407.04491) | RealMLP-TD-S architecture (scaling layer, NTP linear layers, SELU/Mish); pair with `masamlp.realmlp_params(task)` for the full training recipe |
 | `ft_transformer` | Gorishniy et al. 2021 (arXiv:2106.11959) | feature tokens + [CLS] + PreNorm/ReGLU transformer, per the rtdl reference |
 | `tab_transformer` | Huang et al. 2020 (arXiv:2012.06678) | transformer over categorical tokens; numerics bypass (or embed via `num_embedding`) |
@@ -206,8 +207,9 @@ sharded across all GPUs and trained concurrently; opt out with
 `device="cuda:0"`.
 
 **TPU (experimental, 0.4.0/0.5.0):** `device="tpu"` (or `"xla"`) trains on
-Cloud/Kaggle/Colab TPUs via `torch_xla` — bf16 by default, all ten models,
-verified on Kaggle v5e-8 and Colab v5e-1. Kaggle grants TPU quota
+Cloud/Kaggle/Colab TPUs via `torch_xla` — bf16 by default; all ten 0.5.0
+models verified on Kaggle v5e-8 and Colab v5e-1 (`tabm`, new in 0.6.0, has
+XLA CI coverage but no TPU measurement yet). Kaggle grants TPU quota
 *separately* from GPU quota, so this is extra free accelerator time for
 competition workloads. 0.5.0 adds opt-in bf16 prediction (`amp_predict`)
 and large-corpus TabR eval fusion (predict −44% at 345k rows on TPU).

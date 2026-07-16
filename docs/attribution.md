@@ -21,6 +21,13 @@ stopping on any metric), not the model designs.
   Clean-room reimplementation following the MIT-licensed official code in
   LAMDA-Tabular/TALENT (soft-nearest-neighbor aggregation, stochastic
   candidate sampling, diagonal self-exclusion).
+- **TabM** — Gorishniy, Kotelnikov, Babenko, *TabM: Advancing Tabular Deep
+  Learning with Parameter-Efficient Ensembling*, ICLR 2025
+  (arXiv:2410.24210). Implemented from the paper: the TabM-mini structure
+  (shared backbone, per-member embedding adapter and output heads). The
+  adapter initialization `N(1, adapter_std)` is masaMLP's own — the paper's
+  per-layer sign adapters measured worse than a single model here. Official
+  repository: yandex-research/tabm (MIT).
 - **Numeric embeddings (PLR / periodic)** — Gorishniy, Rubachev, Babenko,
   *On Embeddings for Numerical Features in Tabular Deep Learning*, NeurIPS
   2022 (arXiv:2203.05556). Reference: `rtdl_num_embeddings` (MIT).

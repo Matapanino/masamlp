@@ -3,9 +3,9 @@
 ## Project summary
 
 masaMLP is a PyTorch tabular deep learning library and the sibling of
-repleafgbm (same author, same API philosophy). It ships ten architectures
+repleafgbm (same author, same API philosophy). It ships eleven architectures
 (resnet, realmlp, ft_transformer, tab_transformer, danet, tabr, modernnca,
-gandalf, grn, lnn) behind two sklearn-compatible estimators, and
+gandalf, grn, lnn, tabm) behind two sklearn-compatible estimators, and
 differentiates from existing libraries (pytabkit, pytorch_tabular) by making
 **sample_weight, custom objectives, custom metrics, and early stopping on
 any metric** first-class.
@@ -17,7 +17,10 @@ any metric** first-class.
   `(loss * w).sum() / w.sum()`. Never reduce inside an objective — that is
   what guarantees sample_weight works for every objective, including customs.
 - **Models are pure `nn.Module`s** with `forward(x_num, x_cat) -> raw` and an
-  `output_layer` attribute (final `nn.Linear`) for bias initialization. All
+  `output_layer` attribute (final `nn.Linear`) for bias initialization.
+  `raw` is `(n, out)` — or per-member `(n, k, out)` for weight-shared inner
+  ensembles (tabm): the trainer flattens members into rows for the loss and
+  `apply_transform` averages them on the prediction scale (ADR 0005). All
   device/AMP/compile/batching/early-stopping logic lives in `core/`
   (trainer.py, device.py, parallel.py). Models may *declare* policy via
   class attributes (`amp_auto`, `static_state_keys`, `wants_batch_indices`)

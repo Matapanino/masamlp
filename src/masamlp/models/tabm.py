@@ -6,18 +6,18 @@ comes from a per-member multiplicative adapter on the (shared) feature
 embedding; each member then has its own linear output head. The backbone is
 shared and standard (no per-layer sign adapters — that "naive BatchEnsemble"
 underperforms a single model), so it stays a strong feature extractor while the
-k members diverge. Members are trained with **mean-of-per-member cross-entropy**
-(each member an independent predictor) and averaged as probabilities at
-inference — the combination that yields variance reduction.
+k members diverge. Members train as independent predictors (the trainer
+averages the per-member losses) and predictions are averaged on the
+prediction scale — the combination that yields variance reduction.
 
 This is the "TabM-mini" structure: parameter cost is ~1x a single MLP (the
 backbone) plus ``k*(d_out + d*out_dim)`` for the adapter and per-member heads.
 
-Contract notes (masaMLP):
-- ``forward`` returns per-member logits ``(n, k, out_dim)`` in train mode (the
-  softmax objective averages the per-member losses on 3D input) and the mean
-  member probability as a logit ``(n, out_dim)`` in eval (``softmax(log
-  p_bar) == p_bar``).
+Contract notes (masaMLP, ADR 0005):
+- ``forward`` always returns per-member outputs ``(n, k, out_dim)``. The
+  trainer flattens members into rows for the loss (``weighted_loss``), so
+  every objective — including customs — works unchanged; ``apply_transform``
+  averages members on the prediction scale at eval/predict time.
 - ``output_layer`` is the per-member head; its ``(k, out_dim)`` bias receives
   the ``(out_dim,)`` class-prior init by broadcast (``torch.Tensor.copy_``).
 """
@@ -82,8 +82,4 @@ class TabM(nn.Module):
         x = x.unsqueeze(1) * self.adapter              # (n, k, d_out) per-member
         for layer in self.backbone:
             x = self.dropout(torch.relu(layer(x)))     # (n, k, d) shared backbone
-        logits = self.output_layer(x)                  # (n, k, out_dim) per-member heads
-        if self.training:
-            return logits                               # objective: mean-of-per-member CE
-        logprobs = torch.log_softmax(logits, dim=-1)
-        return torch.logsumexp(logprobs, dim=1) - math.log(self.k)  # (n, out_dim) mean-prob
+        return self.output_layer(x)                    # (n, k, out_dim) per-member heads

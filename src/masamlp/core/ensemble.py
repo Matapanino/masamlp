@@ -38,6 +38,7 @@ from masamlp.core.trainer import (
     _make_optimizer,
     _resolve_batch_size,
     flat_cos,
+    weighted_loss,
 )
 from masamlp.data.dataset import TabularData
 from masamlp.utils.random import seed_everything
@@ -218,13 +219,12 @@ def fit_vectorized(
             global_step += 1
 
             raw = vmodel(params, buffers, batch.x_num, batch.x_cat)  # (k, n, out)
-            member_losses = []
-            for j in range(k):
-                loss_i = objective.per_sample_loss(batch.y, raw[j].float())
-                if batch.weight is not None:
-                    member_losses.append((loss_i * batch.weight).sum() / batch.weight.sum())
-                else:
-                    member_losses.append(loss_i.mean())
+            # weighted_loss also flattens inner-ensemble members (models whose
+            # raw[j] is (n, k_inner, out), e.g. tabm) — the two axes compose.
+            member_losses = [
+                weighted_loss(objective, batch.y, raw[j].float(), batch.weight)
+                for j in range(k)
+            ]
             # Sum keeps each member's gradients identical to training alone.
             loss = torch.stack(member_losses).sum()
             optimizer.zero_grad(set_to_none=True)

@@ -10,6 +10,12 @@ models (attention over per-feature embeddings) instead set a class attribute
 ``embedding_kind = "tokens"`` and accept ``(embedding_config: dict, out_dim,
 **model_params)``, constructing a :class:`~masamlp.models.base.TokenEmbedding`
 from the config with their own token width.
+
+Models may instead return per-member outputs ``(n, k, out_dim)`` — dim 1 is
+treated as a weight-shared inner ensemble (ADR 0005): the trainer trains
+every member on each row (losses flatten per member, so ``sample_weight``
+and custom objectives work unchanged) and predictions are averaged
+member-wise on the prediction scale. ``tabm`` is the built-in example.
 """
 
 from __future__ import annotations
