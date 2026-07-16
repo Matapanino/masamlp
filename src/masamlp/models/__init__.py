@@ -10,6 +10,12 @@ models (attention over per-feature embeddings) instead set a class attribute
 ``embedding_kind = "tokens"`` and accept ``(embedding_config: dict, out_dim,
 **model_params)``, constructing a :class:`~masamlp.models.base.TokenEmbedding`
 from the config with their own token width.
+
+Models may instead return per-member outputs ``(n, k, out_dim)`` — dim 1 is
+treated as a weight-shared inner ensemble (ADR 0005): the trainer trains
+every member on each row (losses flatten per member, so ``sample_weight``
+and custom objectives work unchanged) and predictions are averaged
+member-wise on the prediction scale. ``tabm`` is the built-in example.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from masamlp.models.modernnca import ModernNCA
 from masamlp.models.realmlp import NTPLinear, RealMLPNet
 from masamlp.models.resnet import TabularResNet
 from masamlp.models.tab_transformer import TabTransformer
+from masamlp.models.tabm import EnsembleHead, TabM
 from masamlp.models.tabr import TabR
 
 _MODEL_REGISTRY: dict[str, Callable[..., nn.Module]] = {}
@@ -73,6 +80,7 @@ register_model("tab_transformer")(TabTransformer)
 register_model("modernnca")(ModernNCA)
 register_model("gandalf")(GandalfNet)
 register_model("grn")(GRNNet)
+register_model("tabm")(TabM)
 
 
 def _check_model_params(name: str, builder: Callable[..., nn.Module], params: dict) -> None:
@@ -138,6 +146,8 @@ __all__ = [
     "TabR",
     "FTTransformer",
     "TabTransformer",
+    "TabM",
+    "EnsembleHead",
     "ModernNCA",
     "GandalfNet",
     "GatedFeatureLearningUnit",

@@ -18,6 +18,7 @@ TINY_PARAMS = {
     "modernnca": {"dim": 32, "d_block": 64},
     "gandalf": {"n_stages": 2},
     "grn": {"d": 32, "d_hidden": 32, "n_blocks": 2},
+    "tabm": {"k": 4, "d": 32, "n_blocks": 2},
 }
 
 # Attention models tokenize features; "periodic" has no fixed token width.
@@ -37,6 +38,9 @@ TRAIN_KWARGS = {
     # extension) widen it.
     "tab_transformer": {"learning_rate": 3e-3, "num_embedding": "plr"},
     "gandalf": {"num_embedding": "plr"},
+    # A plain-MLP backbone needs more than 40 full-batch steps at 1e-3
+    # (measured: rmse 2.25 -> 0.80 at 3e-3 on the reg fixture).
+    "tabm": {"learning_rate": 3e-3},
 }
 
 ALL_MODELS = sorted(TINY_PARAMS)

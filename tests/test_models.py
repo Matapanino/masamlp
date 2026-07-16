@@ -24,13 +24,20 @@ def _forward(name, n_num=4, cards=(3, 5), out_dim=2, num_embedding=None, n=32):
     return model, model(x_num, x_cat)
 
 
+def _raw_shape(name, n=32, out_dim=2):
+    """Inner-ensemble models emit per-member raw outputs (n, k, out_dim)."""
+    if name == "tabm":
+        return (n, TINY_PARAMS["tabm"]["k"], out_dim)
+    return (n, out_dim)
+
+
 @pytest.mark.parametrize("name", ALL_MODELS)
 @pytest.mark.parametrize("num_embedding", [None, "plr", "periodic"])
 def test_forward_shapes_and_grads(name, num_embedding):
     if num_embedding == "periodic" and name in TOKEN_MODELS:
         pytest.skip("periodic embeddings have no fixed token width")
     model, out = _forward(name, num_embedding=num_embedding)
-    assert out.shape == (32, 2)
+    assert out.shape == _raw_shape(name)
     out.sum().backward()
     grads = [p.grad for p in model.parameters() if p.requires_grad]
     assert all(g is not None and torch.isfinite(g).all() for g in grads)
@@ -39,9 +46,9 @@ def test_forward_shapes_and_grads(name, num_embedding):
 @pytest.mark.parametrize("name", ALL_MODELS)
 def test_numeric_only_and_categorical_only(name):
     _, out = _forward(name, n_num=4, cards=())
-    assert out.shape == (32, 2)
+    assert out.shape == _raw_shape(name)
     _, out = _forward(name, n_num=0, cards=(4,))
-    assert out.shape == (32, 2)
+    assert out.shape == _raw_shape(name)
 
 
 def test_no_features_raises():

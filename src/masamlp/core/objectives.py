@@ -6,8 +6,12 @@ returns a ``(n,)`` tensor and the Trainer performs the weighted reduction
 what makes ``sample_weight`` (and ``class_weight``) work uniformly for every
 objective, including user-supplied ones wrapped with :func:`make_objective`.
 
-Raw model outputs always have shape ``(n, out_dim)``. ``transform`` maps them
-to the prediction scale; its behaviour is identified by ``transform_name`` so
+Raw model outputs are ``(n, out_dim)``. Weight-shared inner ensembles (TabM)
+emit per-member outputs ``(n, k, out_dim)`` instead; the trainer flattens the
+members into rows *before* the objective sees them (``weighted_loss`` in
+core/trainer.py), so objectives — including customs — never see a member
+dim. ``transform`` maps raw outputs to the prediction scale, averaging the
+members of a 3D input; its behaviour is identified by ``transform_name`` so
 a saved model can predict without reconstructing the objective object.
 """
 
@@ -26,16 +30,31 @@ from torch import Tensor, nn
 _MAX_LOG = 30.0
 
 
-def apply_transform(raw: Tensor, transform_name: str) -> Tensor:
+def transform_members(raw: Tensor, transform_name: str) -> Tensor:
+    """The prediction-scale transform without the ensemble average: applied
+    elementwise (softmax over the last dim), so per-member ``(n, k, out)``
+    inputs keep their member dim. The hook a ``predict_members`` API builds
+    on."""
     if transform_name == "identity":
         return raw
     if transform_name == "sigmoid":
         return torch.sigmoid(raw)
     if transform_name == "softmax":
-        return torch.softmax(raw, dim=1)
+        return torch.softmax(raw, dim=-1)
     if transform_name == "exp":
         return torch.exp(raw.clamp(max=_MAX_LOG))
     raise ValueError(f"Unknown transform {transform_name!r}")
+
+
+def apply_transform(raw: Tensor, transform_name: str) -> Tensor:
+    """Raw outputs -> prediction scale, ``(n, out_dim)``. Per-member
+    ``(n, k, out_dim)`` inputs are transformed member-wise and averaged over
+    the member dim — probability averaging for classification, matching the
+    ``n_ens`` convention (and the TabM paper)."""
+    transformed = transform_members(raw, transform_name)
+    if transformed.ndim == 3:
+        return transformed.mean(dim=1)
+    return transformed
 
 
 def _weighted_mean(y: np.ndarray, weight: np.ndarray | None) -> np.ndarray:

@@ -65,3 +65,11 @@
   reverse mode (no aten fallbacks, no recompiles — pure lowering quality).
   Mitigations: larger `d_token`/fewer heads help the shapes; an SDPA-based
   attention block is on the roadmap. GPU is unaffected.
+- **KI-014 — tabm measurement coverage (0.6.0).** Multiclass ensembling
+  quality was measured in the S6E7 campaign (and per-layer naive
+  BatchEnsemble rejected there); **binary and regression are
+  contract-tested only** — exact sample_weight semantics, custom-objective
+  transparency, and equivalence pins in `tests/test_tabm.py`, but no
+  at-scale quality verdict yet (next campaign). TabM also has **no TPU
+  verdict**: it runs in the XLA CI smoke (`PJRT_DEVICE=CPU`), and the
+  README scopes the TPU-verified claim to the ten 0.5.0 models.

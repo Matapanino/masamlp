@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0 (2026-07-16)
+
+TabM, and inner ensembling as a model contract (design: ADR 0005).
+
+- **New architecture: `tabm`** — TabM (Gorishniy et al. 2024,
+  arXiv:2410.24210): a parameter-efficient deep ensemble where `k` members
+  share one MLP backbone and diverge via per-member embedding adapters and
+  output heads (the TabM-mini structure; naive per-layer BatchEnsemble
+  measured worse than a single model on synthetic and was rejected).
+  Defaults follow the paper (`k=32`, `d=512`, `n_blocks=3`); pairs with
+  `num_embedding="plr-lite"` (the paper's TabM†).
+- **The `(n, k, out)` inner-ensemble contract.** Any model — including
+  third-party ones registered via `register_model` — may return per-member
+  raw outputs; the trainer flattens members into rows for the loss
+  (`core.trainer.weighted_loss`) and `apply_transform` averages members on
+  the prediction scale (probability averaging). Consequences: every
+  objective — binary, multiclass, regression, Poisson, quantile, **and
+  customs** — trains inner ensembles unchanged (objectives never see a
+  member dim); `sample_weight` semantics stay exact (weight 3 ≡ the row
+  duplicated 3×, tested); prediction after `load_model` still needs only
+  the stored transform name. Multiclass TabM predictions are unchanged by
+  the refactor (member-wise softmax then mean ≡ the previous in-model
+  logsumexp averaging).
+- `n_ens` composes with the inner axis — `n_ens=m` × `k` gives `m·k`
+  members with a two-stage mean, in every `ens_mode` including
+  `"vectorized"`. Inner-`k` early stopping monitors the ensemble-average
+  metric: per-member best-epoch restoration is ill-defined on shared
+  weights (a documented asymmetry with `n_ens`).
+
 ## 0.5.0 (2026-07-13)
 
 TPU optimization round 2 (follow-ups from the 0.4.0 verification; design:
