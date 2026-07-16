@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0 (2026-07-16)
+
+- **`predict_members` / `predict_proba_members`** — per-member predictions
+  for ensembles (the API pre-decided in ADR 0005 §6, on the existing
+  `transform_members` hook; the averaged `predict` path is unchanged).
+  `MasaRegressor.predict_members(X)` returns `(n, m)` (`(n, m, n_targets)`
+  for multi-output) and `MasaClassifier.predict_proba_members(X)` returns
+  `(n, m, n_classes)`, where `m = n_ens · k` counts outer seed-ensemble
+  members × weight-shared inner members (`tabm`; `k = 1` elsewhere),
+  ordered outer-major. Members are on the prediction scale — probabilities
+  for classification, the original target scale for regression — and the
+  mean over the member axis reproduces `predict` / `predict_proba` (with
+  `clip_predictions=True` each member is clipped individually, so the
+  equality holds where clipping does not bind). Works after
+  `save_model`/`load_model`, in every `ens_mode`, and with non-identity
+  prediction transforms (e.g. Poisson's `exp`).
+
 ## 0.6.0 (2026-07-16)
 
 TabM, and inner ensembling as a model contract (design: ADR 0005).

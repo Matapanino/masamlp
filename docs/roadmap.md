@@ -14,17 +14,14 @@
   hybrid categorical encoding shipped in `realmlp_td_params`.)
 - **HPO presets** — `model_params` presets per model ("fast" / "accurate";
   DANet paper depths 20/24/32 as named presets).
-- **Inner-ensemble follow-ups (ADR 0005; `tabm` shipped in 0.6.0):**
+- **Inner-ensemble follow-ups (ADR 0005; `tabm` shipped in 0.6.0,
+  `predict_members` / `predict_proba_members` shipped in 0.7.0):**
   (a) `ft_transformer` inner `k` via a per-member token adapter — designed
   (ADR 0005 §4), **conditional on** an S6E7-style Colab measurement showing
   `k>1` not worse than single FTT (precedent: naive BatchEnsemble was
   measured and rejected); note `danet` already uses `k` for feature groups,
-  so the docs must disambiguate the names. (b) `predict_members` /
-  `predict_proba_members` — shape pre-decided (`(n, n_ens·k[, C])`,
-  prediction scale, invariant `members.mean(axis=1) == predict`);
-  `transform_members` already exists as the hook, so this is
-  expose-the-path work. (c) `resnet`/`realmlp` inner `k` — only after (a)
-  produces a verdict.
+  so the docs must disambiguate the names. (b) `resnet`/`realmlp` inner `k`
+  — only after (a) produces a verdict.
 - **Vectorized `n_ens` extensions** — shipped for BatchNorm-free models
   (`ens_mode="vectorized"`); remaining: AMP and grad-clip support inside the
   vmapped path, GhostBatchNorm-aware variant for DANet.

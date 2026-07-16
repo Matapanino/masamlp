@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "masamlp"
-version = "0.6.0"
+version = "0.7.0"
 description = "Extensible tabular deep learning: TabularResNet, DANet, and TabularLNN with first-class sample_weight, custom objectives, and custom metrics."
 readme = "README.md"
 requires-python = ">=3.10"
