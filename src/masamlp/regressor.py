@@ -166,3 +166,19 @@ class MasaRegressor(RegressorMixin, BaseMasaModel):
         pred = self._predict_transformed(X)
         inverse = self._inverse_target()
         return inverse(pred) if inverse is not None else pred
+
+    def predict_members(self, X: Any) -> np.ndarray:
+        """Per-member predictions on the original target scale:
+        ``(n, n_ens * k)`` for single-output targets, ``(n, n_ens * k,
+        n_targets)`` for multi-output, where ``k`` is the model's inner
+        (weight-shared) ensemble size — 1 unless the architecture has one
+        (``tabm``). Members are ordered outer-major: the ``k`` inner members
+        of ``models_[0]`` first. The mean over the member axis equals
+        :meth:`predict`; with ``clip_predictions=True`` each member is
+        clipped individually, so the equality holds where clipping does not
+        bind."""
+        members = self._predict_members_transformed(X)
+        inverse = self._inverse_target()
+        if inverse is not None:
+            members = inverse(members)
+        return members[:, :, 0] if members.shape[2] == 1 else members

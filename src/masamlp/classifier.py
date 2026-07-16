@@ -173,6 +173,19 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
             return np.stack([1.0 - pred, pred], axis=1)
         return pred
 
+    def predict_proba_members(self, X: Any) -> np.ndarray:
+        """Per-member class probabilities, ``(n, n_ens * k, n_classes)``
+        (binary included), where ``k`` is the model's inner (weight-shared)
+        ensemble size — 1 unless the architecture has one (``tabm``).
+        Members are ordered outer-major: the ``k`` inner members of
+        ``models_[0]`` first. The mean over the member axis equals
+        :meth:`predict_proba`."""
+        members = self._predict_members_transformed(X)
+        if members.shape[2] == 1:  # binary sigmoid: one positive-class column
+            p = members[:, :, 0]
+            return np.stack([1.0 - p, p], axis=-1)
+        return members
+
     def predict(self, X: Any) -> np.ndarray:
         proba = self.predict_proba(X)
         return self.classes_[np.argmax(proba, axis=1)]

@@ -24,7 +24,12 @@ from masamlp.core.device import (
     resolve_predict_amp,
 )
 from masamlp.core.metrics import BaseMetric, get_metric, make_metric
-from masamlp.core.objectives import BaseObjective, apply_transform, make_objective
+from masamlp.core.objectives import (
+    BaseObjective,
+    apply_transform,
+    make_objective,
+    transform_members,
+)
 from masamlp.core.trainer import (
     EvalSet,
     Trainer,
@@ -409,10 +414,16 @@ class BaseMasaModel(BaseEstimator):
                 f"This {type(self).__name__} instance is not fitted yet; call fit first"
             )
 
-    def _predict_transformed(self, X: Any) -> np.ndarray:
+    def _member_predictions(
+        self, X: Any, transform: Callable[[torch.Tensor], torch.Tensor]
+    ) -> list[np.ndarray]:
+        """Run every fitted outer-ensemble member over X (batched, on the
+        members' prediction device(s)) and return one array per member, order
+        preserved. ``transform`` maps raw outputs to what the caller wants —
+        ``apply_transform`` for averaged predictions, ``transform_members``
+        for the per-member API."""
         self._check_fitted()
         x_num, x_cat = self.preprocessor_.transform(X)
-        transform = self.transform_name_
         members = getattr(self, "models_", None) or [self.model_]
         data = TabularData(torch.from_numpy(x_num), torch.from_numpy(x_cat))
         member_cuda = {d for m in members if (d := module_device(m)).type == "cuda"}
@@ -426,40 +437,63 @@ class BaseMasaModel(BaseEstimator):
             # (An explicit device, e.g. "cpu", takes the branch below.)
             from masamlp.core.parallel import predict_members_grouped
 
-            preds = predict_members_grouped(
+            return predict_members_grouped(
                 members,
                 data,
-                lambda raw: apply_transform(raw, transform),
+                transform,
                 self.eval_batch_size,
                 amp_predict=self.amp_predict,
             )
-        else:
-            device = resolve_device(self.device)
-            if device.index is None and device.type == "cuda":
-                device = torch.device("cuda", torch.cuda.current_device())
-            elif device.index is None and device.type == "mps":
-                device = torch.device("mps", 0)
-            data = data.to(device)
-            autocast_dtype = resolve_predict_amp(self.amp_predict, device)
-            preds = []
-            for model in members:
-                if module_device(model) != device:
-                    # Skipping the no-op move keeps the retrieval models'
-                    # eval cache alive across predict calls (.to() always
-                    # runs _apply, which invalidates it).
-                    model.to(device)
-                preds.append(
-                    predict_transformed(
-                        model,
-                        data,
-                        lambda raw: apply_transform(raw, transform),
-                        self.eval_batch_size,
-                        autocast_dtype=autocast_dtype,
-                    )
+        device = resolve_device(self.device)
+        if device.index is None and device.type == "cuda":
+            device = torch.device("cuda", torch.cuda.current_device())
+        elif device.index is None and device.type == "mps":
+            device = torch.device("mps", 0)
+        data = data.to(device)
+        autocast_dtype = resolve_predict_amp(self.amp_predict, device)
+        preds = []
+        for model in members:
+            if module_device(model) != device:
+                # Skipping the no-op move keeps the retrieval models'
+                # eval cache alive across predict calls (.to() always
+                # runs _apply, which invalidates it).
+                model.to(device)
+            preds.append(
+                predict_transformed(
+                    model,
+                    data,
+                    transform,
+                    self.eval_batch_size,
+                    autocast_dtype=autocast_dtype,
                 )
+            )
+        return preds
+
+    def _predict_transformed(self, X: Any) -> np.ndarray:
+        self._check_fitted()
+        transform = self.transform_name_
+        preds = self._member_predictions(X, lambda raw: apply_transform(raw, transform))
         # Ensemble average on the transformed scale (probabilities for
         # classification), matching pytabkit's RealMLP ensembling.
         return preds[0] if len(preds) == 1 else np.mean(preds, axis=0)
+
+    def _predict_members_transformed(self, X: Any) -> np.ndarray:
+        """Per-member prediction-scale outputs, ``(n, n_ens * k, out_dim)``,
+        outer-major (the ``k`` weight-shared inner members of ``models_[0]``
+        first). The inner axis survives because ``transform_members`` skips
+        the member mean that ``apply_transform`` performs (ADR 0005 §6);
+        models without inner ensembling contribute one member each."""
+        self._check_fitted()
+        transform = self.transform_name_
+        preds = self._member_predictions(X, lambda raw: transform_members(raw, transform))
+        blocks = []
+        for pred in preds:
+            if pred.ndim == 1:  # (n,) — a squeezed single-column 2D output
+                pred = pred[:, None, None]
+            elif pred.ndim == 2:  # (n, out) — no inner axis
+                pred = pred[:, None, :]
+            blocks.append(pred)
+        return blocks[0] if len(blocks) == 1 else np.concatenate(blocks, axis=1)
 
     # ------------------------------------------------------------------ #
     # Serialization

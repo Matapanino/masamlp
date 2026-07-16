@@ -102,7 +102,7 @@ options, is [docs/parameters.md](docs/parameters.md)):
 | `n_epochs` | `256` | Maximum epochs. |
 | `batch_size` | `"auto"` | Full-batch ≤ 4096 rows, else minibatches of 1024. |
 | `learning_rate` | `1e-3` | Optimizer learning rate. |
-| `n_ens` | `1` | Seed-ensemble members (averaged predictions; multi-GPU aware). |
+| `n_ens` | `1` | Seed-ensemble members (averaged predictions; multi-GPU aware). Per-member predictions: `predict_members` / `predict_proba_members`. |
 | `class_weight` | `None` | (classifier) `"balanced"` or a `{label: weight}` dict. |
 | `device` | `"auto"` | cuda > mps > cpu. |
 | `random_state` | `42` | Seed; same seed ⇒ same model. |

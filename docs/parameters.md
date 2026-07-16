@@ -101,6 +101,18 @@ members inside one model (see the [`tabm` section](#tabm--tabm-parameter-efficie
 It is orthogonal to `n_ens` and the two compose — `n_ens=m` trains `m`
 independent TabM models for `m·k` members in total, in any `ens_mode`.
 
+Member-level predictions are exposed on both axes:
+`MasaRegressor.predict_members(X)` returns `(n, n_ens · k)`
+(`(n, n_ens · k, n_targets)` for multi-output) and
+`MasaClassifier.predict_proba_members(X)` returns `(n, n_ens · k,
+n_classes)`, ordered outer-major (the `k` inner members of `models_[0]`
+first), on the prediction scale — probabilities for classification, the
+original target scale for regression. The mean over the member axis
+reproduces `predict` / `predict_proba`; the per-member spread is the usual
+deep-ensemble uncertainty signal. With `clip_predictions=True` members are
+clipped individually, so the mean-equality holds only where clipping does
+not bind.
+
 ### Hardware and execution
 
 | Parameter | Default | Meaning |

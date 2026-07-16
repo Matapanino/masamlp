@@ -33,8 +33,8 @@ _MAX_LOG = 30.0
 def transform_members(raw: Tensor, transform_name: str) -> Tensor:
     """The prediction-scale transform without the ensemble average: applied
     elementwise (softmax over the last dim), so per-member ``(n, k, out)``
-    inputs keep their member dim. The hook a ``predict_members`` API builds
-    on."""
+    inputs keep their member dim. The hook ``predict_members`` /
+    ``predict_proba_members`` build on."""
     if transform_name == "identity":
         return raw
     if transform_name == "sigmoid":
