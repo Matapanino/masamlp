@@ -14,14 +14,17 @@
   hybrid categorical encoding shipped in `realmlp_td_params`.)
 - **HPO presets** — `model_params` presets per model ("fast" / "accurate";
   DANet paper depths 20/24/32 as named presets).
-- **Inner-ensemble follow-ups (ADR 0005; `tabm` shipped in 0.6.0,
-  `predict_members` / `predict_proba_members` shipped in 0.7.0):**
-  (a) `ft_transformer` inner `k` via a per-member token adapter — designed
-  (ADR 0005 §4), **conditional on** an S6E7-style Colab measurement showing
-  `k>1` not worse than single FTT (precedent: naive BatchEnsemble was
-  measured and rejected); note `danet` already uses `k` for feature groups,
-  so the docs must disambiguate the names. (b) `resnet`/`realmlp` inner `k`
-  — only after (a) produces a verdict.
+- **Inner-ensemble follow-ups (ADR 0005; `tabm` 0.6.0, `predict_members` 0.7.0,
+  `ft_transformer` inner `k` 0.8.0):**
+  (a) `ft_transformer` inner `k` via a per-member token adapter — **shipped in
+  0.8.0** (ADR 0005 §4). The pre-registered S6E7 gate passed: inner-`k=4`
+  improved a single FT-Transformer by −0.00038 nat (6/7 folds, 690k, 7-fold
+  prior-free balanced logloss) — a real gain, though an independent seed
+  ensemble (`n_ens`) remained the stronger variance reducer, so it is a
+  single-fit efficiency feature. `danet` already uses `k` for feature groups —
+  the parameter docs disambiguate. (b) `resnet`/`realmlp` inner `k` —
+  UNFROZEN now (a) has a positive verdict; a candidate for a future round,
+  though the S6E7 read (inner-`k` < a seed ensemble) lowers its priority.
 - **Vectorized `n_ens` extensions** — shipped for BatchNorm-free models
   (`ens_mode="vectorized"`); remaining: AMP and grad-clip support inside the
   vmapped path, GhostBatchNorm-aware variant for DANet.

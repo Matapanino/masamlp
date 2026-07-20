@@ -127,6 +127,10 @@ The tricks from the RealMLP paper are estimator-level options usable with
   value scale; works with every model including the retrieval ones.
   `ens_mode="vectorized"` trains all members in one vmapped forward/backward
   (`torch.func`) for BatchNorm-free models — pytabkit's speed trick
+- inner ensembling — `tabm` (always) and `ft_transformer` (`k>1`, new in
+  0.8.0) run `k` weight-shared members inside one model (TabM-mini),
+  composing with the outer `n_ens`; the `n_ens·k` members are exposed by
+  `predict_members` / `predict_proba_members`
 - `weight_decay_schedule="flat_cos"` — RealMLP-TD's scheduled weight decay
   (param groups can opt out, e.g. biases)
 - `ema_decay=0.999` — exponential moving average (Polyak averaging) of the
