@@ -19,6 +19,7 @@ import torch
 from torch import Tensor, nn
 
 from masamlp.models.base import TokenEmbedding
+from masamlp.models.tabm import EnsembleHead
 
 
 class _ReGLU(nn.Module):
@@ -88,13 +89,29 @@ class FTTransformer(nn.Module):
         ffn_d_hidden_multiplier: float = 4 / 3,
         ffn_dropout: float = 0.1,
         residual_dropout: float = 0.0,
+        k: int = 1,
+        adapter_std: float = 0.5,
     ) -> None:
         super().__init__()
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        self.k = k
         self.embedding = TokenEmbedding(
             d_token=d_block, tokenize_numeric=True, **embedding_config
         )
         self.cls_token = nn.Parameter(torch.empty(d_block))
         nn.init.uniform_(self.cls_token, -1.0 / math.sqrt(d_block), 1.0 / math.sqrt(d_block))
+        # TabM-style inner ensemble (ADR 0005 §4). k>1 adds a per-member
+        # multiplicative adapter on the feature tokens — the only source of
+        # member diversity — while the [CLS] query and the whole backbone
+        # (blocks + head_norm) stay shared; each member gets its own linear head
+        # via EnsembleHead. k=1 builds the EXACT legacy module tree (single
+        # nn.Linear head, no adapter) so pre-0.6.0 checkpoints still load and
+        # every existing ftt result is byte-unchanged.
+        if k > 1:
+            self.adapter = nn.Parameter(torch.empty(k, 1, d_block))
+            with torch.no_grad():
+                self.adapter.normal_(1.0, adapter_std)
         ffn_d_hidden = int(d_block * ffn_d_hidden_multiplier)
         self.blocks = nn.ModuleList(
             _FTBlock(
@@ -109,13 +126,26 @@ class FTTransformer(nn.Module):
             for i in range(n_blocks)
         )
         self.head_norm = nn.LayerNorm(d_block)
-        self.output_layer = nn.Linear(d_block, out_dim)
+        self.output_layer = (
+            EnsembleHead(d_block, out_dim, k) if k > 1 else nn.Linear(d_block, out_dim)
+        )
 
     def forward(self, x_num: Tensor, x_cat: Tensor) -> Tensor:
-        tokens, _ = self.embedding(x_num, x_cat)
+        tokens, _ = self.embedding(x_num, x_cat)           # (n, s, d)
+        n = tokens.shape[0]
+        if self.k > 1:
+            # Per-member adapter, then fold members into the batch dim so the
+            # SHARED attention runs once over (n*k) sequences — a plain batched
+            # forward, not a vmap over k modules, which is why it sidesteps the
+            # flash-SDPA vmap bug that blocks ens_mode="vectorized" on attention.
+            tokens = tokens.unsqueeze(1) * self.adapter    # (n, k, s, d)
+            tokens = tokens.reshape(n * self.k, *tokens.shape[2:])  # (n*k, s, d)
         cls = self.cls_token.expand(tokens.shape[0], 1, -1)
         x = torch.cat([cls, tokens], dim=1)
         n_blocks = len(self.blocks)
         for i, block in enumerate(self.blocks):
             x = block(x, query_only_cls=i + 1 == n_blocks)
-        return self.output_layer(torch.relu(self.head_norm(x[:, 0])))
+        h = torch.relu(self.head_norm(x[:, 0]))            # (n*k, d) or (n, d)
+        if self.k > 1:
+            h = h.reshape(n, self.k, -1)                   # (n, k, d)
+        return self.output_layer(h)                        # (n, k, out) or (n, out)

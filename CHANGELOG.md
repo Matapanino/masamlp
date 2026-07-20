@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0 (2026-07-20)
+
+- **`ft_transformer` inner-`k` ensembling** — TabM-style inner ensembling
+  (ADR 0005 §4) on the FT-Transformer: a per-member multiplicative token
+  adapter `(k, 1, d)` after `TokenEmbedding`, the members folded into the
+  batch dim through the *shared* attention (a batched forward, not a
+  `torch.func.vmap` over `k` modules — so it works where
+  `ens_mode="vectorized"` cannot, on attention archs), then a per-member
+  `EnsembleHead`. `k=1` (the default) builds the exact legacy module tree, so
+  0.5.0+ FT-Transformer checkpoints keep loading and every existing result is
+  byte-unchanged; `k>1` returns the `(n, k, out)` inner-ensemble contract
+  (0.6.0) and composes with the outer seed ensemble `n_ens`. Compute is
+  `~k×` (attention included); docs recommend `k=4–8`. Pairs with
+  `num_embedding="plr-lite"` (the paper's TabM†). Measurement-gated per
+  ADR 0005 §7: on a large imbalanced tabular task (690k rows, 7-fold,
+  prior-free balanced logloss) inner-`k=4` improved a single FT-Transformer
+  by **−0.00038 nat (6/7 folds)** — a real gain, though an independent seed
+  ensemble (`n_ens`) remained the stronger variance reducer there.
+
 ## 0.7.0 (2026-07-16)
 
 - **`predict_members` / `predict_proba_members`** — per-member predictions

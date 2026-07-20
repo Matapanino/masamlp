@@ -226,13 +226,17 @@ tuning in isolation.
 | `ffn_d_hidden_multiplier` | `4/3` | FFN hidden dim = `d_block × multiplier` (ReGLU feed-forward). |
 | `ffn_dropout` | `0.1` | Dropout inside the FFN. |
 | `residual_dropout` | `0.0` | Dropout on both residual branches. |
+| `k` | `1` | TabM-style inner ensemble members (ADR 0005 §4): a per-member multiplicative adapter on the feature tokens, a shared attention backbone + `[CLS]` query, and a per-member output head; predictions averaged on the probability scale. `k=1` is the plain FT-Transformer (byte-identical module tree — pre-0.6.0 checkpoints load). Composes with the outer seed ensemble `n_ens`. |
+| `adapter_std` | `0.5` | Std of the per-member adapter init `N(1, adapter_std)` (used only when `k>1`); members start near the single model and diverge during training. |
 
 **Sizing notes.** Defaults are the reference package's
 `get_default_kwargs(n_blocks=3)` (rtdl_revisiting_models, arXiv:2106.11959);
 the reference scales `d_block` and the dropouts together with `n_blocks` in
 its presets, so when you deepen the model, widen it too. Compute grows
 quadratically with the number of features (attention over one token per
-feature).
+feature). Inner ensembling (`k>1`) recommends `k=4–8` here: the members fold
+into the batch dim so the shared attention runs ~k× the compute (unlike the
+MLP-backbone `tabm`, where `k=32` is cheap).
 
 ### `tab_transformer` — TabTransformer
 
