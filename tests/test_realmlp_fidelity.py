@@ -13,11 +13,11 @@ test hold that line:
 * :func:`test_default_init_matches_080_fixture` and
   :func:`test_fit_predictions_match_080_fixture` — a seeded default build's
   initial tensors, and a tiny end-to-end fit's predictions, compared against
-  values recorded from **0.8.0** (``tests/fixtures/*.npz``).  These assert a
-  tight tolerance rather than bit-equality: a seeded ``torch.randn`` turns out
-  not to be bit-reproducible across machines at all (see the note above
-  ``_INIT_ATOL``), so bit-equality here would be a test of the CI fleet, not
-  of masaMLP.
+  values recorded from **0.8.0** (``tests/fixtures/*.npz``).  A seeded
+  ``torch.randn`` is not bit-reproducible across machines, so the init
+  fixture asserts a tolerance and the fit fixture runs only on the build that
+  recorded it — the measurements behind both choices are in the note above
+  ``_INIT_ATOL``.
 
 Regenerate the fixtures (only ever from a checkout whose behaviour is the
 reference) with::
@@ -300,19 +300,28 @@ def test_onehot_max_categories_moves_the_split():
     assert MasaClassifier(model="realmlp").onehot_max_categories == 9
 
 
-# Measured, not assumed. A seeded `torch.randn` is NOT bit-reproducible across
-# machines: on this repo's CI, the same seed and the same torch version produce
-# initial weights differing by up to 7.5e-9 between two macOS/arm64 runners and
-# by up to 1.7e-6 between macOS/arm64 and Linux/x86_64 (the same draw, a
-# different last fp32 digit — torch's CPU `normal_` vectorizes per ISA and per
-# available instruction set). Four epochs of training carry that into ~5e-7 on
-# the predictions.
+# All measured on this repo's CI, not assumed. A seeded `torch.randn` is NOT
+# bit-reproducible across machines — torch's CPU `normal_` vectorizes per ISA
+# and per available instruction set — so the same seed and the same torch
+# version give initial weights differing by
 #
-# So these fixtures assert a TOLERANCE, sized ~100x above the largest drift
-# observed and ~1e4 below any behavioural change (turning on a fidelity option
-# moves the init by O(1) and the predictions by O(1e-2)). The genuine
-# bit-identity claim is `test_defaults_match_legacy_arguments`, which compares
-# both code paths in one process and therefore holds everywhere.
+#   up to 7.5e-9   between two macOS/arm64 machines
+#   up to 1.7e-6   between macOS/arm64 and Linux/x86_64
+#
+# The INIT fixture therefore asserts `_INIT_ATOL`: ~6x above the largest drift
+# seen and ~1e5 below any behavioural change (turning on a fidelity option
+# moves the init by O(1)). It runs everywhere.
+#
+# The FIT fixture cannot work that way. Four epochs of RealMLP's high-lr recipe
+# amplify that same 1.7e-6 into a **0.0367** absolute prediction difference on
+# Linux — the same order as a real behavioural change — so no tolerance would
+# separate "masaMLP changed" from "different CPU". It is therefore compared
+# only on the build that recorded it, and skipped elsewhere rather than
+# loosened into meaninglessness.
+#
+# Neither fixture is the bit-identity guarantee. That is
+# `test_defaults_match_legacy_arguments`, which compares both code paths in one
+# process and holds on every machine.
 _INIT_ATOL = 1e-5
 _FIT_ATOL = 1e-4
 
@@ -341,8 +350,16 @@ def test_default_init_matches_080_fixture():
 
 def test_fit_predictions_match_080_fixture():
     """A full tiny fit under both RealMLP presets reproduces 0.8.0's
-    predictions to four decimals."""
+    predictions — on the build that recorded the fixture (see the note above
+    ``_INIT_ATOL`` for why it cannot be checked anywhere else)."""
     ref = np.load(FIT_FIXTURE)
+    if (str(ref["torch_version"]), str(ref["machine"])) != (
+        torch.__version__, platform.machine()
+    ):
+        pytest.skip(
+            f"fixture {_provenance(ref)}; running torch {torch.__version__} / "
+            f"{platform.machine()} — cross-machine fp32 drift reaches 0.037 here"
+        )
     out = _fit_case()
     for key, value in out.items():
         np.testing.assert_allclose(
