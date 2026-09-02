@@ -10,11 +10,15 @@ that line:
   the plain default path and the path with every new argument spelled out at
   its legacy value must produce **bit-identical** parameters and predictions.
 * :func:`test_default_init_matches_080_fixture` — the seeded initial
-  parameters of a default build are compared, ``atol=0``, against tensors
-  recorded from **0.8.0** (``tests/fixtures/realmlp_init_v080.npz``).  Init is
-  pure ``torch.randn``/``torch.rand`` under a manual seed, so this fixture is
-  stable across torch versions in a way a trained-weights fixture would not
-  be; the end-to-end fit fixture below is therefore version-gated.
+  parameters of a default build are compared against tensors recorded from
+  **0.8.0** (``tests/fixtures/realmlp_init_v080.npz``): ``atol=0`` on the
+  build that recorded them, ``atol=1e-5`` elsewhere, because a seeded
+  ``torch.randn`` is not bit-identical across CPU architectures (measured:
+  ~1.7e-6 between macOS/arm64 and Linux/x86_64 — the same draw, a different
+  last fp32 digit).  Any real change to the init would be O(1).  The
+  end-to-end fit fixture is skipped off the recording build entirely: four
+  epochs of training turn a last-digit init difference into an ordinary
+  prediction difference, so no tolerance there would assert anything.
 
 Regenerate the fixtures (only ever from a checkout whose behaviour is the
 reference) with::
@@ -24,6 +28,7 @@ reference) with::
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 
 import numpy as np
@@ -296,37 +301,58 @@ def test_onehot_max_categories_moves_the_split():
     assert MasaClassifier(model="realmlp").onehot_max_categories == 9
 
 
+def _same_build(ref) -> bool:
+    """Was this fixture recorded by this torch build on this architecture?
+
+    Measured while writing these tests: `torch.randn` under a manual seed is
+    **not** bit-identical across CPU architectures — a seeded default build on
+    macOS/arm64 and on Linux/x86_64 agrees to ~1.7e-6 absolute (the same draw,
+    a different last fp32 digit), because torch's CPU `normal_` vectorizes
+    differently per ISA. So exact equality is asserted only where it is a
+    meaningful claim; elsewhere the tolerance below still catches any real
+    change, which would be O(1), not O(1e-6).
+    """
+    return (
+        str(ref["torch_version"]) == torch.__version__
+        and str(ref["machine"]) == platform.machine()
+    )
+
+
 def test_default_init_matches_080_fixture():
-    """Seeded default init is byte-identical to what 0.8.0 produced."""
+    """Seeded default init reproduces what 0.8.0 produced — bit for bit on the
+    recording platform, to fp32 rounding elsewhere."""
     ref = np.load(INIT_FIXTURE)
+    exact = _same_build(ref)
     for name in _INIT_CASES:
         model = _seeded_build(name)
         for pname, tensor in model.named_parameters():
             key = f"{name}.{pname}"
             assert key in ref, f"fixture has no {key} (architecture changed?)"
-            np.testing.assert_array_equal(
-                tensor.detach().numpy(), ref[key], err_msg=f"init changed for {key}"
-            )
+            actual = tensor.detach().numpy()
+            msg = f"init changed for {key}"
+            if exact:
+                np.testing.assert_array_equal(actual, ref[key], err_msg=msg)
+            else:
+                np.testing.assert_allclose(actual, ref[key], rtol=0, atol=1e-5, err_msg=msg)
         extra = [k for k in ref.files
                  if k.startswith(f"{name}.")
                  and k[len(name) + 1:] not in dict(model.named_parameters())]
         assert not extra, f"fixture parameters vanished: {extra}"
 
 
-@pytest.mark.skipif(
-    not FIT_FIXTURE.exists(), reason="fit fixture not generated"
-)
 def test_fit_predictions_match_080_fixture():
     """A full tiny fit under both presets reproduces 0.8.0's predictions.
 
-    Gated on the torch version the fixture was recorded with: matmul/reduction
-    kernels are free to change between releases, so an inequality here across
-    versions would be a torch fact, not a masaMLP regression.
+    Exact on the recording build; skipped elsewhere. Unlike the init fixture
+    there is no useful tolerance here: eight epochs of training amplify a
+    last-digit init difference into an ordinary prediction difference, so a
+    loose bound would assert nothing.
     """
     ref = np.load(FIT_FIXTURE)
-    if str(ref["torch_version"]) != torch.__version__:
+    if not _same_build(ref):
         pytest.skip(
-            f"fixture recorded on torch {ref['torch_version']}, running {torch.__version__}"
+            f"fixture recorded on torch {ref['torch_version']} / {ref['machine']}, "
+            f"running {torch.__version__} / {platform.machine()}"
         )
     out = _fit_case()
     for key, value in out.items():
@@ -343,9 +369,11 @@ def _regen() -> None:
         model = _seeded_build(name)
         for pname, tensor in model.named_parameters():
             init[f"{name}.{pname}"] = tensor.detach().numpy()
-    np.savez(INIT_FIXTURE, **init)
+    np.savez(INIT_FIXTURE, torch_version=np.array(torch.__version__),
+             machine=np.array(platform.machine()), **init)
     fit = _fit_case()
-    np.savez(FIT_FIXTURE, torch_version=np.array(torch.__version__), **fit)
+    np.savez(FIT_FIXTURE, torch_version=np.array(torch.__version__),
+             machine=np.array(platform.machine()), **fit)
     print(f"wrote {INIT_FIXTURE} ({len(init)} tensors) and {FIT_FIXTURE} "
           f"(torch {torch.__version__})")
 
