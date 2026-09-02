@@ -43,7 +43,7 @@ def realmlp_params(task: str = "regression") -> dict[str, Any]:
     return params
 
 
-def realmlp_td_params(task: str = "regression") -> dict[str, Any]:
+def realmlp_td_params(task: str = "regression", pytabkit_fidelity: bool = False) -> dict[str, Any]:
     """The full RealMLP-TD recipe (Holzmüller et al. 2024, per pytabkit's
     defaults), on top of TD-S: parametric activations (lr x0.1), scheduled
     dropout 0.15 (flat_cos), weight decay 2e-2 (flat_cos, none on biases),
@@ -52,9 +52,27 @@ def realmlp_td_params(task: str = "regression") -> dict[str, Any]:
     size 8 above), lr 0.04 (classification) / 0.2 (regression), and output
     clipping for regression.
 
-    Known deviations from pytabkit: decoupled AdamW-style weight decay
-    (pytabkit couples it into Adam), and the reference N(0,1) init instead
-    of pytabkit's data-driven ``he+5``/``std`` init modes.
+    Every value above matches pytabkit's ``DefaultParams.RealMLP_TD_CLASS``
+    /``_REG``. Three *structural* choices did not, up to 0.8.0, and are what
+    ``pytabkit_fidelity=True`` switches on (0.9.0):
+
+    * ``init_mode="std+he5"`` — pytabkit's data-driven layerwise init
+      (``weight_init_mode='std'``, ``bias_init_mode='he+5'``) instead of the
+      standalone TD-S reference's ``N(0, 1)`` draw;
+    * ``zero_init_output=False`` — TD initializes its output layer like any
+      other layer (only TD-**S** zeroes it);
+    * ``scale_position="first_layer"`` — TD's ``add_front_scale`` diagonal
+      gain sits on the first hidden layer's *input*, i.e. after the PBLD
+      embedding, not on the raw numerics.
+
+    It also sets ``onehot_max_categories=8`` (pytabkit's
+    ``max_one_hot_cat_size=9`` counts its reserved missing slot) and
+    ``drop_last=True`` (its dataloader default). The weight decay is
+    unchanged: pytabkit's is decoupled and lr-scaled, which is exactly what
+    ``optimizer="adamw"`` already does.
+
+    The default (``pytabkit_fidelity=False``) is unchanged from 0.8.0, so
+    existing results reproduce.
     """
     if task not in ("regression", "classification"):
         raise ValueError("task must be 'regression' or 'classification'")
@@ -90,4 +108,13 @@ def realmlp_td_params(task: str = "regression") -> dict[str, Any]:
         params["label_smoothing"] = 0.1
     else:
         params["clip_predictions"] = True
+    if pytabkit_fidelity:
+        params["model_params"] = {
+            **params["model_params"],
+            "init_mode": "std+he5",
+            "zero_init_output": False,
+            "scale_position": "first_layer",
+        }
+        params["onehot_max_categories"] = 8
+        params["drop_last"] = True
     return params
