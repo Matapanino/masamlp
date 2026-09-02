@@ -42,6 +42,11 @@ from masamlp.models import build_model
 from masamlp.utils.random import seed_everything
 from masamlp.utils.validation import as_sample_weight, as_target, check_consistent_length
 
+#: Rows fed to a model's data-driven initialization (`needs_data_init`).
+#: Only per-unit statistics and a handful of row draws are computed from
+#: them, so a cap keeps the pass cheap on large training sets.
+DATA_INIT_ROWS = 65536
+
 
 class BaseMasaModel(BaseEstimator):
     """Do not instantiate directly; use MasaRegressor or MasaClassifier."""
@@ -66,10 +71,14 @@ class BaseMasaModel(BaseEstimator):
         numeric_scaler: str = "quantile",
         categorical_features: Any = "auto",
         cat_encoding: str = "embedding",
+        onehot_max_categories: int = 9,
         optimizer_betas: tuple[float, float] | None = None,
         n_ens: int = 1,
         ens_mode: str = "loop",
         weight_decay_schedule: str = "none",
+        weight_decay_mode: str = "auto",
+        label_smoothing_schedule: str = "none",
+        drop_last: bool = False,
         ema_decay: float | None = None,
         candidate_budget: int | None = None,
         device: str = "auto",
@@ -98,10 +107,14 @@ class BaseMasaModel(BaseEstimator):
         self.numeric_scaler = numeric_scaler
         self.categorical_features = categorical_features
         self.cat_encoding = cat_encoding
+        self.onehot_max_categories = onehot_max_categories
         self.optimizer_betas = optimizer_betas
         self.n_ens = n_ens
         self.ens_mode = ens_mode
         self.weight_decay_schedule = weight_decay_schedule
+        self.weight_decay_mode = weight_decay_mode
+        self.label_smoothing_schedule = label_smoothing_schedule
+        self.drop_last = drop_last
         self.ema_decay = ema_decay
         self.candidate_budget = candidate_budget
         self.device = device
@@ -180,7 +193,10 @@ class BaseMasaModel(BaseEstimator):
         y_arr = as_target(y)
 
         pre = TabularPreprocessor(
-            self.numeric_scaler, self.categorical_features, cat_encoding=self.cat_encoding
+            self.numeric_scaler,
+            self.categorical_features,
+            cat_encoding=self.cat_encoding,
+            onehot_max_categories=self.onehot_max_categories,
         )
         x_num, x_cat = pre.fit(X).transform(X)
         n_rows = x_num.shape[0]
@@ -248,6 +264,20 @@ class BaseMasaModel(BaseEstimator):
                 out_dim=out_dim,
                 num_embedding=self.num_embedding,
             )
+            if getattr(model, "needs_data_init", False):
+                # Data-driven initialization (RealMLP-TD's layerwise `std` +
+                # `he+5`). Gated on the model asking for it so a model that
+                # does not consumes no RNG here and stays byte-identical to
+                # pre-0.9.0. A capped random subsample keeps the extra
+                # forward pass cheap: it only feeds per-unit std estimates
+                # and the he+5 row draws.
+                take = min(n_rows, DATA_INIT_ROWS)
+                rows = (
+                    torch.randperm(n_rows)[:take].numpy() if take < n_rows else slice(None)
+                )
+                model.data_init(
+                    torch.from_numpy(x_num[rows]), torch.from_numpy(x_cat[rows])
+                )
             if hasattr(model, "output_layer") and bias.shape == (out_dim,):
                 with torch.no_grad():
                     model.output_layer.bias.copy_(torch.from_numpy(bias))
@@ -294,6 +324,9 @@ class BaseMasaModel(BaseEstimator):
                 betas=self.optimizer_betas,
                 lr_scheduler=self.lr_scheduler,
                 weight_decay_schedule=self.weight_decay_schedule,
+                weight_decay_mode=self.weight_decay_mode,
+                label_smoothing_schedule=self.label_smoothing_schedule,
+                drop_last=self.drop_last,
                 grad_clip=self.grad_clip,
                 ema_decay=self.ema_decay,
                 device=self.device if device is None else device,

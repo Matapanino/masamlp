@@ -50,6 +50,18 @@ class TrainerConfig:
     # "flat_cos" scales weight decay per step (RealMLP-TD); param groups may
     # carry a "wd_factor" (e.g. 0.0 for biases).
     weight_decay_schedule: str = "none"
+    # "auto" (default) keeps each named optimizer's own convention — adamw
+    # decouples (`p *= 1 - lr*wd`), adam couples (`wd*p` into the gradient),
+    # sgd couples. "decoupled" / "coupled" force one regardless of the name.
+    # (pytabkit's RealMLP-TD is DECOUPLED, and additionally scales the decay
+    # by lr, which `adamw` already does.)
+    weight_decay_mode: str = "auto"
+    # "coslog4" / "flat_cos" scale the objective's label smoothing per step
+    # (pytabkit's `ls_eps_sched`); "none" keeps it constant.
+    label_smoothing_schedule: str = "none"
+    # Drop the final short batch of every epoch (pytabkit's `drop_last=True`),
+    # so every optimizer step sees exactly `batch_size` rows.
+    drop_last: bool = False
     grad_clip: float | None = None
     # Exponential moving average of the model parameters (Polyak averaging).
     # When set (typically ~0.99-0.999), eval / early stopping / the final
@@ -215,15 +227,23 @@ def _make_optimizer(
     lr: float,
     weight_decay: float,
     betas: tuple[float, float] | None,
+    weight_decay_mode: str = "decoupled",
 ) -> torch.optim.Optimizer:
-    if name == "adamw":
-        return torch.optim.AdamW(
-            groups, lr=lr, weight_decay=weight_decay, betas=betas or (0.9, 0.999)
+    if weight_decay_mode not in ("auto", "decoupled", "coupled"):
+        raise ValueError(
+            f"Unknown weight_decay_mode {weight_decay_mode!r}. "
+            "Expected 'auto', 'decoupled' or 'coupled'"
         )
-    if name == "adam":
-        return torch.optim.Adam(
-            groups, lr=lr, weight_decay=weight_decay, betas=betas or (0.9, 0.999)
-        )
+    # AdamW decouples, Adam couples: the mode picks the torch class that
+    # already implements it, so the per-group `weight_decay` the scheduler
+    # writes keeps meaning the same thing in both. "auto" keeps each named
+    # optimizer's own convention, which is what pre-0.9.0 did.
+    if name in ("adamw", "adam"):
+        mode = ("decoupled" if name == "adamw" else "coupled") if (
+            weight_decay_mode == "auto"
+        ) else weight_decay_mode
+        cls = torch.optim.AdamW if mode == "decoupled" else torch.optim.Adam
+        return cls(groups, lr=lr, weight_decay=weight_decay, betas=betas or (0.9, 0.999))
     if name == "sgd":
         if betas is not None:
             raise ValueError("betas is only supported for adam/adamw")
@@ -324,7 +344,8 @@ class Trainer:
         )
         params = [p for g in groups for p in g["params"]]
         optimizer = _make_optimizer(
-            config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas
+            config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas,
+            config.weight_decay_mode,
         )
         scheduler = None
         per_step_schedule = None
@@ -343,6 +364,21 @@ class Trainer:
             )
         wd_scheduled = config.weight_decay_schedule == "flat_cos"
         model_has_schedule = hasattr(model, "set_schedule_t")
+        # pytabkit's `ls_eps_sched`: the smoothing epsilon is scaled per step
+        # and enters the LABELS, so the objective's attribute is what moves.
+        _LS_SCHEDULES = {"coslog4": _coslog4, "flat_cos": flat_cos}
+        if config.label_smoothing_schedule not in ("none", *_LS_SCHEDULES):
+            raise ValueError(
+                f"Unknown label_smoothing_schedule {config.label_smoothing_schedule!r}. "
+                f"Expected 'none' or one of {sorted(_LS_SCHEDULES)}"
+            )
+        ls_schedule = _LS_SCHEDULES.get(config.label_smoothing_schedule)
+        ls_base = getattr(objective, "label_smoothing", None)
+        if ls_schedule is not None and ls_base is None:
+            raise ValueError(
+                "label_smoothing_schedule needs an objective with a "
+                "`label_smoothing` attribute (binary_logistic / multiclass_softmax)"
+            )
 
         amp_enabled, amp_dtype = resolve_amp(config.amp, device, model)
         predict_dtype = resolve_predict_amp(config.amp_predict, device)
@@ -407,7 +443,14 @@ class Trainer:
             scaler.update()
             return loss.detach()
 
-        steps_per_epoch = 1 if full_batch else int(np.ceil(n / batch_size))
+        # drop_last (pytabkit's default) makes every step a full batch; with
+        # fewer rows than one batch there is nothing to drop.
+        drop_last = bool(config.drop_last) and not full_batch and n >= batch_size
+        steps_per_epoch = (
+            1
+            if full_batch
+            else int(n // batch_size if drop_last else np.ceil(n / batch_size))
+        )
         total_steps = max(1, config.n_epochs * steps_per_epoch)
         global_step = 0
         # Retrieval models (TabR) need to know which candidate rows are in the
@@ -434,6 +477,8 @@ class Trainer:
                 ]
             else:
                 batches = torch.randperm(n, generator=gen).to(device).split(batch_size)
+            if drop_last and len(batches[-1]) < batch_size:
+                batches = batches[:-1]
             for idx in batches:
                 batch = train if idx is None else train.slice(idx)
                 t = global_step / total_steps
@@ -448,6 +493,8 @@ class Trainer:
                 if model_has_schedule:
                     # RealMLP-TD schedules its dropout probability over training.
                     model.set_schedule_t(t)
+                if ls_schedule is not None:
+                    objective.label_smoothing = ls_base * ls_schedule(t)
                 if wants_batch_indices:
                     model.current_batch_indices = idx if idx is not None else full_idx
                 global_step += 1
@@ -542,6 +589,11 @@ class Trainer:
 
         if wants_batch_indices:
             model.current_batch_indices = None
+        if ls_schedule is not None:
+            # The schedule mutates the objective in place; hand it back
+            # unchanged so a reused objective (n_ens members, refits) is not
+            # left at whatever epsilon the last step happened to set.
+            objective.label_smoothing = ls_base
         if stopper is not None and best_state is not None:
             # strict=False tolerates exactly the static buffers the snapshot
             # deliberately omits — anything else missing is a real bug.

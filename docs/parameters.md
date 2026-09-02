@@ -76,6 +76,9 @@ Built-in metrics (string values):
 | `optimizer_betas` | `None` | `(beta1, beta2)` for adam/adamw (`None` = torch defaults). The RealMLP recipe uses `(0.9, 0.95)`. |
 | `lr_scheduler` | `"none"` | `"none"`, `"cosine"` (per-epoch cosine annealing), or `"coslog4"` (RealMLP's per-step schedule). |
 | `weight_decay_schedule` | `"none"` | `"none"` or `"flat_cos"` (RealMLP-TD: constant for the first half of training, cosine decay after; param groups can opt out, e.g. biases). |
+| `weight_decay_mode` | `"auto"` | How weight decay enters the update. `"auto"` keeps each optimizer's own convention (`adamw` decoupled, `adam`/`sgd` coupled) — the pre-0.9.0 behaviour. `"decoupled"` is AdamW's `p *= 1 - lr·wd`; `"coupled"` adds `wd·p` to the gradient so it passes through Adam's second moment. pytabkit's RealMLP-TD is **decoupled**. |
+| `label_smoothing_schedule` | `"none"` | Per-step schedule on the objective's `label_smoothing` (pytabkit's `ls_eps_sched`): `"none"`, `"coslog4"` (RealMLP-TD — 0 at both ends of training, four cosine cycles between) or `"flat_cos"`. Needs an objective with a `label_smoothing` attribute. |
+| `drop_last` | `False` | Drop each epoch's final short batch, so every optimizer step sees exactly `batch_size` rows (pytabkit's dataloader default). Also shortens the per-step schedule denominator to `floor(n/batch_size)` steps per epoch. |
 | `grad_clip` | `None` | Global gradient-norm clip; `None` disables. |
 | `ema_decay` | `None` | Exponential moving average (Polyak averaging) of the weights, e.g. `0.999`; evaluation, early stopping, and the final model use the averaged parameters. Not supported with `ens_mode="vectorized"`. |
 
@@ -86,6 +89,7 @@ Built-in metrics (string values):
 | `numeric_scaler` | `"quantile"` | `"quantile"` (rank → normal), `"standard"`, `"robust"`, `"rssc"` (RealMLP's robust-scale-smooth-clip), or `"none"`. Fitted on the training set only. |
 | `categorical_features` | `"auto"` | `"auto"` detects categorical columns from DataFrame dtypes; or pass a list of column names/indices. |
 | `cat_encoding` | `"embedding"` | `"embedding"` (per-column `nn.Embedding`, index 0 reserved for unknown/missing), `"onehot"` (RealMLP-style: binary → ±1, missing → 0), or `"hybrid"` (one-hot up to 9 categories, embeddings above — RealMLP-TD). |
+| `onehot_max_categories` | `9` | Cardinality threshold for `cat_encoding="hybrid"`: columns with at most this many observed categories are one-hot encoded (and then scaled with the numerics), the rest get embeddings. pytabkit's `max_one_hot_cat_size` counts its reserved missing slot as well, so its 18 corresponds to `17` here. |
 | `num_embedding` | `None` | Numeric-feature embedding: `None` (raw), `"periodic"`, or the PLR family `"pl"` / `"plr"` / `"plr-lite"` / `"pbld"` (arXiv:2203.05556 + PBLD per pytabkit). Token models (`ft_transformer`, `tab_transformer`) accept the PLR family (not `"periodic"`) as their feature tokenizer. Tune the embedding itself via the [shared embedding keys](#shared-embedding-keys-inside-model_params). |
 
 ### Ensembling
@@ -207,6 +211,12 @@ outer seed ensemble `n_ens`. Pairs well with `num_embedding="plr-lite"`
 | `use_parametric_act` | `False` | Learnable per-unit activation scale (RealMLP-TD), trained at `act_lr_factor`. |
 | `act_lr_factor` | `0.1` | Learning-rate factor for the parametric activations. |
 | `plr_lr_factor` | `1.0` | Learning-rate factor for the numeric-embedding parameters (RealMLP-TD uses 0.1 with PBLD). |
+| `init_mode` | `"ntp"` | `"ntp"` — weights and biases both `N(0, 1)`, the standalone TD-S reference's init. `"std+he5"` — pytabkit's RealMLP-**TD** init, applied layer by layer on a batch of training rows: each weight is rescaled so its pre-activations have unit sample std, and each bias is minus a random Exp(1)-simplex combination of five sampled pre-activations of that unit. Requires the estimator (which supplies the batch); harmless on a model built directly. |
+| `zero_init_output` | `True` | Zero-initialize the output layer (RealMLP-TD-S). RealMLP-TD does **not** — set `False` to init it like any other layer. |
+| `scale_position` | `"input"` | Where the learnable diagonal gain sits. `"input"` scales the raw numeric features before any embedding (TD-S, and what `num_scaling` builds). `"first_layer"` moves it to the first hidden layer's input — after the numeric embedding and beside the one-hots and categorical embeddings — which is where RealMLP-TD's `add_front_scale` puts it. |
+| `scale_lr_factor` | `6.0` | Learning-rate factor for the scaling layer. RealMLP-TD's tuned configurations use values around 2–10. |
+| `first_layer_lr_factor` | `1.0` | Extra learning-rate factor on the first hidden layer's weight **and** bias (pytabkit applies it to both, and to neither the scaling layer nor the numeric embedding). |
+| `bias_lr_factor` | `0.1` | Learning-rate factor for every NTP bias (biases also never receive weight decay). |
 
 **Sizing notes.** `hidden_sizes` is the whole architecture: length = depth,
 entries = per-layer width. The `(256, 256, 256)` default is the RealMLP-TD(-S)
