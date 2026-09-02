@@ -1,24 +1,23 @@
 """RealMLP-TD fidelity knobs (0.9.0) — and the guarantee that turning none of
 them on changes nothing.
 
-The three fidelity levers ported from pytabkit's RealMLP-TD in 0.9.0 —
-``init_mode``, ``weight_decay_mode``, and the configurable per-group lr
-factors — all default to the 0.8.0 behaviour.  Two independent tests hold
-that line:
+The fidelity levers ported from pytabkit's RealMLP-TD in 0.9.0 —
+``init_mode``, ``zero_init_output``, ``scale_position``, the configurable
+per-group lr factors, ``weight_decay_mode``, ``label_smoothing_schedule`` and
+``drop_last`` — all default to the 0.8.0 behaviour.  Two independent kinds of
+test hold that line:
 
 * :func:`test_defaults_match_legacy_arguments` — same process, same seed:
   the plain default path and the path with every new argument spelled out at
   its legacy value must produce **bit-identical** parameters and predictions.
-* :func:`test_default_init_matches_080_fixture` — the seeded initial
-  parameters of a default build are compared against tensors recorded from
-  **0.8.0** (``tests/fixtures/realmlp_init_v080.npz``): ``atol=0`` on the
-  build that recorded them, ``atol=1e-5`` elsewhere, because a seeded
-  ``torch.randn`` is not bit-identical across CPU architectures (measured:
-  ~1.7e-6 between macOS/arm64 and Linux/x86_64 — the same draw, a different
-  last fp32 digit).  Any real change to the init would be O(1).  The
-  end-to-end fit fixture is skipped off the recording build entirely: four
-  epochs of training turn a last-digit init difference into an ordinary
-  prediction difference, so no tolerance there would assert anything.
+* :func:`test_default_init_matches_080_fixture` and
+  :func:`test_fit_predictions_match_080_fixture` — a seeded default build's
+  initial tensors, and a tiny end-to-end fit's predictions, compared against
+  values recorded from **0.8.0** (``tests/fixtures/*.npz``).  These assert a
+  tight tolerance rather than bit-equality: a seeded ``torch.randn`` turns out
+  not to be bit-reproducible across machines at all (see the note above
+  ``_INIT_ATOL``), so bit-equality here would be a test of the CI fleet, not
+  of masaMLP.
 
 Regenerate the fixtures (only ever from a checkout whose behaviour is the
 reference) with::
@@ -301,39 +300,39 @@ def test_onehot_max_categories_moves_the_split():
     assert MasaClassifier(model="realmlp").onehot_max_categories == 9
 
 
-def _same_build(ref) -> bool:
-    """Was this fixture recorded by this torch build on this architecture?
+# Measured, not assumed. A seeded `torch.randn` is NOT bit-reproducible across
+# machines: on this repo's CI, the same seed and the same torch version produce
+# initial weights differing by up to 7.5e-9 between two macOS/arm64 runners and
+# by up to 1.7e-6 between macOS/arm64 and Linux/x86_64 (the same draw, a
+# different last fp32 digit — torch's CPU `normal_` vectorizes per ISA and per
+# available instruction set). Four epochs of training carry that into ~5e-7 on
+# the predictions.
+#
+# So these fixtures assert a TOLERANCE, sized ~100x above the largest drift
+# observed and ~1e4 below any behavioural change (turning on a fidelity option
+# moves the init by O(1) and the predictions by O(1e-2)). The genuine
+# bit-identity claim is `test_defaults_match_legacy_arguments`, which compares
+# both code paths in one process and therefore holds everywhere.
+_INIT_ATOL = 1e-5
+_FIT_ATOL = 1e-4
 
-    Measured while writing these tests: `torch.randn` under a manual seed is
-    **not** bit-identical across CPU architectures — a seeded default build on
-    macOS/arm64 and on Linux/x86_64 agrees to ~1.7e-6 absolute (the same draw,
-    a different last fp32 digit), because torch's CPU `normal_` vectorizes
-    differently per ISA. So exact equality is asserted only where it is a
-    meaningful claim; elsewhere the tolerance below still catches any real
-    change, which would be O(1), not O(1e-6).
-    """
-    return (
-        str(ref["torch_version"]) == torch.__version__
-        and str(ref["machine"]) == platform.machine()
-    )
+
+def _provenance(ref) -> str:
+    return f"recorded on torch {ref['torch_version']} / {ref['machine']}"
 
 
 def test_default_init_matches_080_fixture():
-    """Seeded default init reproduces what 0.8.0 produced — bit for bit on the
-    recording platform, to fp32 rounding elsewhere."""
+    """A seeded default build reproduces 0.8.0's initial tensors."""
     ref = np.load(INIT_FIXTURE)
-    exact = _same_build(ref)
     for name in _INIT_CASES:
         model = _seeded_build(name)
         for pname, tensor in model.named_parameters():
             key = f"{name}.{pname}"
             assert key in ref, f"fixture has no {key} (architecture changed?)"
-            actual = tensor.detach().numpy()
-            msg = f"init changed for {key}"
-            if exact:
-                np.testing.assert_array_equal(actual, ref[key], err_msg=msg)
-            else:
-                np.testing.assert_allclose(actual, ref[key], rtol=0, atol=1e-5, err_msg=msg)
+            np.testing.assert_allclose(
+                tensor.detach().numpy(), ref[key], rtol=0, atol=_INIT_ATOL,
+                err_msg=f"init changed for {key} ({_provenance(ref)})",
+            )
         extra = [k for k in ref.files
                  if k.startswith(f"{name}.")
                  and k[len(name) + 1:] not in dict(model.named_parameters())]
@@ -341,22 +340,15 @@ def test_default_init_matches_080_fixture():
 
 
 def test_fit_predictions_match_080_fixture():
-    """A full tiny fit under both presets reproduces 0.8.0's predictions.
-
-    Exact on the recording build; skipped elsewhere. Unlike the init fixture
-    there is no useful tolerance here: eight epochs of training amplify a
-    last-digit init difference into an ordinary prediction difference, so a
-    loose bound would assert nothing.
-    """
+    """A full tiny fit under both RealMLP presets reproduces 0.8.0's
+    predictions to four decimals."""
     ref = np.load(FIT_FIXTURE)
-    if not _same_build(ref):
-        pytest.skip(
-            f"fixture recorded on torch {ref['torch_version']} / {ref['machine']}, "
-            f"running {torch.__version__} / {platform.machine()}"
-        )
     out = _fit_case()
     for key, value in out.items():
-        np.testing.assert_array_equal(value, ref[key], err_msg=f"{key} predictions changed")
+        np.testing.assert_allclose(
+            value, ref[key], rtol=0, atol=_FIT_ATOL,
+            err_msg=f"{key} predictions changed ({_provenance(ref)})",
+        )
 
 
 # ---------------------------------------------------------------------------
