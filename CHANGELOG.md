@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.0 (2026-09-02)
+
+- **RealMLP-TD fidelity** — the last structural gaps between masaMLP's
+  `realmlp` and pytabkit's `RealMLP_TD_*` are now options, every one of them
+  defaulting to the 0.8.0 behaviour, so existing results reproduce
+  bit-for-bit (`tests/test_realmlp_fidelity.py`):
+  - `init_mode="std+he5"` — pytabkit's **data-driven layerwise init**: each
+    `NTPLinear`'s weight is redrawn and rescaled so its pre-activations have
+    unit sample std on a batch of training rows, and its bias is set to minus
+    a random Exp(1)-simplex combination of five sampled pre-activations of
+    that unit (`he+5`). The trunk is walked in order, so every layer sees the
+    activations the re-initialized layers before it actually produce. Models
+    declare `needs_data_init` and the estimator supplies a capped random
+    subsample (`masamlp.sklearn.DATA_INIT_ROWS`).
+  - `zero_init_output=False` — RealMLP-**TD** does not zero its output layer
+    (only TD-S does).
+  - `scale_position="first_layer"` — TD's `add_front_scale` diagonal gain
+    sits on the first hidden layer's *input* (after the numeric embedding),
+    not on the raw numerics.
+  - `scale_lr_factor` / `first_layer_lr_factor` / `bias_lr_factor` are now
+    parameters (were hard-coded 6.0 / 1.0 / 0.1). `first_layer_lr_factor`
+    multiplies the first layer's weight **and** bias, as pytabkit does.
+  - `realmlp_td_params(task, pytabkit_fidelity=True)` bundles the above with
+    `onehot_max_categories=8` and `drop_last=True`.
+- **Trainer levers** — `weight_decay_mode` (`"auto"` / `"decoupled"` /
+  `"coupled"`), `label_smoothing_schedule` (`"none"` / `"coslog4"` /
+  `"flat_cos"`, pytabkit's `ls_eps_sched`; the objective is restored
+  afterwards) and `drop_last` (drops each epoch's short tail batch and
+  shortens the per-step schedule denominator accordingly).
+- **`onehot_max_categories`** is exposed on both estimators — the
+  `cat_encoding="hybrid"` threshold was fixed at 9.
+- **Correction.** The preset docs claimed pytabkit couples weight decay into
+  Adam. It does not: pytabkit's decay is decoupled and lr-scaled
+  (`p *= 1 - wd*lr`), which is what `optimizer="adamw"` already did. The
+  `weight_decay_mode` lever ships anyway, but the fidelity gap was the init,
+  the output layer and the scale position — not the decay.
+
 ## 0.8.0 (2026-07-20)
 
 - **`ft_transformer` inner-`k` ensembling** — TabM-style inner ensembling
