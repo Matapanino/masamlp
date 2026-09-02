@@ -118,6 +118,13 @@ The tricks from the RealMLP paper are estimator-level options usable with
   numeric embedding zoo (arXiv:2203.05556 + PBLD); token models
   (`ft_transformer`, `tab_transformer`) use the same options as feature
   tokenizers
+- `num_embedding_cols=[...]` / `linear_skip_cols=[...]` (new in 0.9.1) —
+  **input routing**: embed only *these* numeric columns and let the rest enter
+  the first layer linearly, and/or send *these* numeric columns straight to
+  the output through a zero-initialized linear skip
+  (`raw = trunk(x) + x_skip @ W_skip + b_skip`, own param group at
+  `linear_skip_lr_factor`, no weight decay; `realmlp`). For numeric blocks
+  that mix raw measurements with target-encoded log-odds columns
 - `model_params={"num_scaling": True}` — learnable per-feature input scale
 - `lr_scheduler="coslog4"`, `optimizer_betas=(0.9, 0.95)` — the training
   schedule
