@@ -203,6 +203,38 @@ def test_retrieval_minibatch_xla(name, clf_data):
     assert np.all(np.isfinite(m.predict_proba(X_test)))
 
 
+def test_input_routing_xla(clf_data):
+    """Input routing (0.9.1) selects columns through registered int64 buffers,
+    so the traced graph has no data-dependent shapes: the routed model must
+    fit and predict on XLA exactly like any other, and the routed fit must
+    match the same fit on CPU."""
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    kw = dict(
+        model="realmlp",
+        model_params={"hidden_sizes": [16, 16], "d_num_embedding": 4, "n_frequencies": 8},
+        num_embedding="pbld",
+        num_embedding_cols=["0", "1", "2"],
+        linear_skip_cols=["3", "4"],
+        linear_skip_lr_factor=0.5,
+        n_epochs=8,
+        batch_size=64,
+        learning_rate=0.03,
+        optimizer="adam",
+        amp=False,
+        random_state=0,
+    )
+    on_xla = MasaClassifier(**kw, device="xla").fit(X, y)
+    assert on_xla.model_.skip_weight.shape == (2, 1)
+    proba = on_xla.predict_proba(X_test)
+    assert np.all(np.isfinite(proba))
+    # Same routed model on CPU: fp32 drift across devices is real, so this
+    # asserts agreement, not bit-equality.
+    on_cpu = MasaClassifier(**kw, device="cpu").fit(X, y)
+    assert np.corrcoef(proba[:, 1], on_cpu.predict_proba(X_test)[:, 1])[0, 1] > 0.98
+
+
 def test_vectorized_rejected_on_xla(reg_data):
     X, y, _, _ = reg_data
     m = _regressor(n_ens=2, ens_mode="vectorized", model="resnet")

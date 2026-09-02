@@ -276,11 +276,21 @@ def fit_vectorized(
                 results[j].best_iteration = stopper.best_epoch
                 results[j].best_score = float(stopper.best_value)
 
-    # Unstack back into the individual member modules.
+    # Unstack back into the individual member modules. Non-persistent buffers
+    # (ScheduledDropout's keep probability, the input-routing index selectors)
+    # are stacked like any other buffer but are absent from ``state_dict``, so
+    # they are copied in place instead of going through a strict load.
     with torch.no_grad():
         for j, model in enumerate(models):
+            persistent = set(model.state_dict())
             state = {name: params[name][j] for name in params}
-            state.update({name: buffers[name][j] for name in buffers})
+            state.update(
+                {name: buffers[name][j] for name in buffers if name in persistent}
+            )
             model.load_state_dict(state)
+            named = dict(model.named_buffers())
+            for name, value in buffers.items():
+                if name not in persistent:
+                    named[name].copy_(value[j])
             model.eval()
     return results

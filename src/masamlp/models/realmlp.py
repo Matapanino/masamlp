@@ -22,6 +22,15 @@ layerwise init, ``zero_init_output=False`` for TD's non-zero output layer,
 layer's input (where TD puts it) rather than on the raw numerics (where
 TD-S puts it), and explicit ``scale_lr_factor`` / ``first_layer_lr_factor``
 / ``bias_lr_factor``.
+
+0.9.1 adds the opt-in **input routing** half of the architecture:
+``linear_skip_idx`` puts a zero-initialized linear map from a subset of the
+numeric inputs straight onto the logits
+(``raw = trunk(x) + x_skip @ W_skip + b_skip``), trained in its own param
+group at ``linear_skip_lr_factor`` with no weight decay. Its counterpart on
+the input side is :class:`~masamlp.models.base.FeatureEmbedding`'s
+``num_embedding_idx``, which restricts the numeric embedding to a subset of
+the columns. Both default to ``None`` = the 0.9.0 model, byte for byte.
 """
 
 from __future__ import annotations
@@ -33,7 +42,7 @@ import torch
 from torch import Tensor, nn
 
 from masamlp.core.trainer import flat_cos
-from masamlp.models.base import FeatureEmbedding
+from masamlp.models.base import FeatureEmbedding, _resolve_column_idx
 from masamlp.models.layers import ScalingLayer
 
 _ACTIVATIONS: dict[str, Callable[[Tensor], Tensor]] = {
@@ -165,6 +174,8 @@ class RealMLPNet(nn.Module):
         scale_lr_factor: float = 6.0,
         first_layer_lr_factor: float = 1.0,
         bias_lr_factor: float = 0.1,
+        linear_skip_idx: list[int] | None = None,
+        linear_skip_lr_factor: float = 1.0,
     ) -> None:
         super().__init__()
         if activation not in _ACTIVATIONS:
@@ -219,6 +230,26 @@ class RealMLPNet(nn.Module):
         self.output_layer = NTPLinear(d_in, out_dim, zero_init=zero_init_output)
         if scale_position == "first_layer":
             self.front_scale = ScalingLayer(embedding.d_out)
+        # Additive linear skip (0.9.1): a linear map from a subset of the
+        # model's numeric inputs straight onto the logits. Zero-initialized,
+        # so switching it on draws no random numbers and costs nothing at
+        # init — every other parameter stays byte-identical, and the head's
+        # bias initialization is unaffected. Selection goes through a fixed
+        # int64 buffer (no data-dependent shapes; moves with ``.to()``).
+        self.linear_skip_idx = _resolve_column_idx(
+            linear_skip_idx, embedding.n_num, "linear_skip_idx"
+        )
+        self.linear_skip_lr_factor = linear_skip_lr_factor
+        self.skip_weight: nn.Parameter | None = None
+        self.skip_bias: nn.Parameter | None = None
+        if self.linear_skip_idx is not None:
+            self.register_buffer(
+                "_skip_idx",
+                torch.tensor(self.linear_skip_idx, dtype=torch.int64),
+                persistent=False,
+            )
+            self.skip_weight = nn.Parameter(torch.zeros(len(self.linear_skip_idx), out_dim))
+            self.skip_bias = nn.Parameter(torch.zeros(out_dim))
 
     def set_schedule_t(self, t: float) -> None:
         """Trainer hook: update scheduled dropout with training progress."""
@@ -232,7 +263,14 @@ class RealMLPNet(nn.Module):
         h = self.embedding(x_num, x_cat)
         if self.front_scale is not None:
             h = self.front_scale(h)
-        return self.output_layer(self.trunk(h))
+        out = self.output_layer(self.trunk(h))
+        if self.skip_weight is not None:
+            # The skip reads the numeric input as the preprocessor produced
+            # it — before the learnable scaling layer and before any numeric
+            # embedding — so its weights are plain per-unit output coefficients.
+            skip = x_num.index_select(1, self._skip_idx)
+            out = out + skip @ self.skip_weight + self.skip_bias
+        return out
 
     @torch.no_grad()
     def data_init(self, x_num: Tensor, x_cat: Tensor) -> None:
@@ -271,6 +309,11 @@ class RealMLPNet(nn.Module):
         **and** bias factors — as pytabkit does
         (``pytabkit/models/nn_models/models.py:283-284``) — and never the
         scaling layer or the numeric embedding.
+
+        The additive linear skip (``linear_skip_idx``) gets its own group at
+        ``linear_skip_lr_factor`` with **zero weight decay**: it is a small,
+        directly interpretable linear term whose scale should be set by the
+        data, not shrunk by the trunk's regularizer.
         """
         ntp = [m for m in self.modules() if isinstance(m, NTPLinear)]
         first = next((m for m in self.trunk if isinstance(m, NTPLinear)), None)
@@ -292,9 +335,12 @@ class RealMLPNet(nn.Module):
             if self.embedding.num_embedding is not None
             else []
         )
+        skip = [self.skip_weight, self.skip_bias] if self.skip_weight is not None else []
         first_w = [first.weight] if first is not None else []
         first_b = [first.bias] if first is not None else []
-        assigned = {id(p) for p in weights + biases + scale + act + plr + first_w + first_b}
+        assigned = {
+            id(p) for p in weights + biases + scale + act + plr + skip + first_w + first_b
+        }
         other = [p for p in self.parameters() if p.requires_grad and id(p) not in assigned]
         ff = self.first_layer_lr_factor
         groups = [
@@ -319,6 +365,7 @@ class RealMLPNet(nn.Module):
             ),
             {"params": act, "lr_factor": self.act_lr_factor},
             {"params": plr, "lr_factor": self.plr_lr_factor},
+            {"params": skip, "lr_factor": self.linear_skip_lr_factor, "wd_factor": 0.0},
             {"params": other, "lr_factor": 1.0},
         ]
         return [g for g in groups if g["params"]]

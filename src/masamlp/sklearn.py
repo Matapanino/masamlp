@@ -4,6 +4,46 @@
 own target handling (standardization / label encoding + class weights). The
 LightGBM-style surface — ``fit(X, y, sample_weight=..., eval_set=...)``,
 ``evals_result_``, ``best_iteration_`` — matches repleafgbm.
+
+Input routing (0.9.1)
+---------------------
+Two opt-in options say *how* individual numeric columns reach the network.
+Both take column **names**, resolved at ``fit`` time against the numeric
+block the model sees (the non-categorical columns in their original order,
+followed by the one-hot block when ``cat_encoding`` makes one); both default
+to ``None`` = the pre-0.9.1 behaviour, byte for byte.
+
+``num_embedding_cols``
+    Apply ``num_embedding`` (``"pbld"``, ``"plr"``, ...) to these numeric
+    columns only. Every other numeric column bypasses the embedding and
+    enters the first layer linearly (still under ``num_scaling``). Useful
+    when only part of the numeric block is a *measurement*: a periodic
+    embedding buys a raw measurement a flexible 1-D response, but a column
+    that is already a target-encoded log-odds is a monotone score whose
+    linear use is the point.
+
+``linear_skip_cols`` / ``linear_skip_lr_factor``
+    Add a linear map from these (scaled) numeric columns straight onto the
+    output — ``raw = trunk(x) + x_skip @ W_skip + b_skip`` — trained in its
+    own optimizer param group at ``linear_skip_lr_factor`` (default 1.0)
+    with **zero weight decay**. ``W_skip``/``b_skip`` start at zero, so the
+    model begins exactly where it would without the skip. RealMLP only.
+
+Both address columns by name, so a plain ndarray works too (pandas' default
+positional names, ``"0"``, ``"1"``, ...). Naming a categorical column, or a
+column that is not in ``X``, is an error.
+
+Example — 7 raw numerics get the embedding, the target-encoded logit columns
+stay linear, and two of them also feed the skip::
+
+    raw = ["age", "income", "commute_km", ...]
+    te = [c for c in X.columns if c.endswith("_te")]
+    MasaClassifier(
+        **realmlp_td_params("classification"),
+        num_embedding_cols=raw,
+        linear_skip_cols=["environment_te", "subsidy_te"],
+        linear_skip_lr_factor=1.0,
+    ).fit(X, y)
 """
 
 from __future__ import annotations
@@ -68,6 +108,9 @@ class BaseMasaModel(BaseEstimator):
         lr_scheduler: str = "none",
         grad_clip: float | None = None,
         num_embedding: str | None = None,
+        num_embedding_cols: list[str] | None = None,
+        linear_skip_cols: list[str] | None = None,
+        linear_skip_lr_factor: float = 1.0,
         numeric_scaler: str = "quantile",
         categorical_features: Any = "auto",
         cat_encoding: str = "embedding",
@@ -104,6 +147,9 @@ class BaseMasaModel(BaseEstimator):
         self.lr_scheduler = lr_scheduler
         self.grad_clip = grad_clip
         self.num_embedding = num_embedding
+        self.num_embedding_cols = num_embedding_cols
+        self.linear_skip_cols = linear_skip_cols
+        self.linear_skip_lr_factor = linear_skip_lr_factor
         self.numeric_scaler = numeric_scaler
         self.categorical_features = categorical_features
         self.cat_encoding = cat_encoding
@@ -155,6 +201,82 @@ class BaseMasaModel(BaseEstimator):
         if self.model == "realmlp":
             return {"num_scaling": True}
         return {}
+
+    # ------------------------------------------------------------------ #
+    # Input routing (see the module docstring)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _resolve_numeric_cols(
+        cols: Any, pre: TabularPreprocessor, param: str
+    ) -> list[int] | None:
+        """Column names -> ascending positions in the model's numeric block.
+
+        The block is ``pre.numeric_idx_`` in the input's column order; any
+        one-hot columns ``cat_encoding`` produces are appended *after* it, so
+        they never shift a named column's position (and are not addressable —
+        they are categorical). ``None`` passes through: the option is off.
+        """
+        if cols is None:
+            return None
+        if isinstance(cols, str):
+            raise ValueError(
+                f"{param} must be a list of column names, got the string {cols!r}"
+            )
+        names = [str(c) for c in cols]
+        if not names:
+            raise ValueError(f"{param} must name at least one column, got an empty list")
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(f"{param} has duplicate columns: {duplicates}")
+        position = {
+            pre.feature_names_in_[col]: i for i, col in enumerate(pre.numeric_idx_)
+        }
+        categorical = {pre.feature_names_in_[c] for c in pre.categorical_idx_}
+        resolved = []
+        for name in names:
+            if name in position:
+                resolved.append(position[name])
+            elif name in categorical:
+                raise ValueError(
+                    f"{param}: {name!r} is a categorical column. Input routing addresses "
+                    "numeric columns only; categorical columns keep their own encoding"
+                )
+            else:
+                known = list(position)
+                shown = known[:20] + ["..."] if len(known) > 20 else known
+                raise ValueError(
+                    f"{param}: unknown column {name!r}. The numeric columns are {shown}"
+                )
+        return sorted(resolved)
+
+    def _routing_params(self, pre: TabularPreprocessor) -> dict[str, Any]:
+        """The ``model_params`` entries the routing options resolve to."""
+        from masamlp.models import model_accepts
+
+        params: dict[str, Any] = {}
+        emb_idx = self._resolve_numeric_cols(
+            self.num_embedding_cols, pre, "num_embedding_cols"
+        )
+        if emb_idx is not None:
+            if self.num_embedding is None:
+                raise ValueError(
+                    "num_embedding_cols chooses which numeric columns the numeric "
+                    "embedding applies to, so it needs num_embedding to be set "
+                    "(e.g. num_embedding='pbld')"
+                )
+            params["num_embedding_idx"] = emb_idx
+        skip_idx = self._resolve_numeric_cols(
+            self.linear_skip_cols, pre, "linear_skip_cols"
+        )
+        if skip_idx is not None:
+            if not model_accepts(self.model, "linear_skip_idx"):
+                raise ValueError(
+                    f"linear_skip_cols is not supported by model={self.model!r}; the "
+                    "additive linear skip is implemented on model='realmlp'"
+                )
+            params["linear_skip_idx"] = skip_idx
+            params["linear_skip_lr_factor"] = self.linear_skip_lr_factor
+        return params
 
     # ------------------------------------------------------------------ #
     # Fitting
@@ -245,7 +367,11 @@ class BaseMasaModel(BaseEstimator):
             raise ValueError(
                 "ema_decay is not supported with ens_mode='vectorized'; use ens_mode='loop'"
             )
-        resolved_params = {**self._model_param_defaults(), **(self.model_params or {})}
+        resolved_params = {
+            **self._model_param_defaults(),
+            **(self.model_params or {}),
+            **self._routing_params(pre),
+        }
         bias = np.asarray(objective.init_bias(y_enc, weight), dtype=np.float32)
 
         # Ensemble members differ by their seed (init + shuffling; in

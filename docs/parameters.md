@@ -91,6 +91,23 @@ Built-in metrics (string values):
 | `cat_encoding` | `"embedding"` | `"embedding"` (per-column `nn.Embedding`, index 0 reserved for unknown/missing), `"onehot"` (RealMLP-style: binary → ±1, missing → 0), or `"hybrid"` (one-hot up to 9 categories, embeddings above — RealMLP-TD). |
 | `onehot_max_categories` | `9` | Cardinality threshold for `cat_encoding="hybrid"`: columns with at most this many observed categories are one-hot encoded (and then scaled with the numerics), the rest get embeddings. pytabkit's `max_one_hot_cat_size` counts its reserved missing slot as well, so its 18 corresponds to `17` here. |
 | `num_embedding` | `None` | Numeric-feature embedding: `None` (raw), `"periodic"`, or the PLR family `"pl"` / `"plr"` / `"plr-lite"` / `"pbld"` (arXiv:2203.05556 + PBLD per pytabkit). Token models (`ft_transformer`, `tab_transformer`) accept the PLR family (not `"periodic"`) as their feature tokenizer. Tune the embedding itself via the [shared embedding keys](#shared-embedding-keys-inside-model_params). |
+| `num_embedding_cols` | `None` | Input routing: apply `num_embedding` to **these numeric columns only** (a list of column names). Every other numeric column bypasses the embedding and enters the first layer linearly, still under `num_scaling`. `None` embeds all of them. Requires `num_embedding`; not available on token models. |
+| `linear_skip_cols` | `None` | Input routing: add a linear map from these (scaled) numeric columns straight onto the output — `raw = trunk(x) + x_skip @ W_skip + b_skip`. `W_skip`/`b_skip` are zero-initialized, so the fit starts exactly where it would without the skip, and they train in their own param group with **zero weight decay**. `model="realmlp"` only. |
+| `linear_skip_lr_factor` | `1.0` | Learning-rate factor for the `linear_skip_cols` parameters. `0.0` freezes them at zero (an exact no-op control). |
+
+**Input routing.** Both options take column **names**, resolved at `fit`
+against the numeric block the model sees: the non-categorical columns in
+their original order, followed by the one-hot block `cat_encoding` produces
+(so a one-hot column never shifts a named column's position, and is not
+itself addressable). Naming a categorical or unknown column raises. A plain
+ndarray works too — pandas' positional names `"0"`, `"1"`, … Note that with
+`cat_encoding="onehot"`/`"hybrid"` the one-hot columns *are* part of the
+numeric block, so naming only the real numerics in `num_embedding_cols`
+deliberately keeps the one-hots out of the embedding. Positions can be given
+directly instead via `num_embedding_idx` / `linear_skip_idx` in
+`model_params`. Typical use: a target-encoded log-odds column is a monotone
+score whose linear use is the point, while a raw measurement benefits from
+the periodic embedding's flexible 1-D response.
 
 ### Ensembling
 
@@ -156,6 +173,7 @@ Accepted in `model_params` for **every** model; they configure the
 | `sigma` | `0.1` | Scale of the initial frequencies (`c ~ N(0, sigma²)`); the most sensitive periodic-embedding knob in arXiv:2203.05556. |
 | `cat_emb_dim` | `None` | Per-column categorical embedding dim; `None` = auto (`min(32, max(2, round(1.6 · cardinality^0.56)))`). Token models ignore it (tokens are `d_token`/`d_block` wide). |
 | `num_scaling` | `False` | Learnable per-feature scale on numeric inputs before embedding (RealMLP's scaling layer, trained at 6× lr there). Defaults to `True` when `model="realmlp"`. |
+| `num_embedding_idx` | `None` | Positional form of the estimator's `num_embedding_cols`: a list of positions in the numeric block the embedding applies to; the rest bypass it. Output layout becomes `[embedded | bypassing | categorical]`, each block in ascending column order. Rejected for token models. |
 
 ## Per-architecture parameters
 
@@ -217,6 +235,7 @@ outer seed ensemble `n_ens`. Pairs well with `num_embedding="plr-lite"`
 | `scale_lr_factor` | `6.0` | Learning-rate factor for the scaling layer. RealMLP-TD's tuned configurations use values around 2–10. |
 | `first_layer_lr_factor` | `1.0` | Extra learning-rate factor on the first hidden layer's weight **and** bias (pytabkit applies it to both, and to neither the scaling layer nor the numeric embedding). |
 | `bias_lr_factor` | `0.1` | Learning-rate factor for every NTP bias (biases also never receive weight decay). |
+| `linear_skip_idx` | `None` | Positional form of the estimator's `linear_skip_cols`: positions in the numeric block that also feed a zero-initialized linear map onto the output (`raw = trunk(x) + x_skip @ W_skip + b_skip`), read *before* the scaling layer and any numeric embedding. Its parameters form their own optimizer group at `linear_skip_lr_factor` with zero weight decay. |
 
 **Sizing notes.** `hidden_sizes` is the whole architecture: length = depth,
 entries = per-layer width. The `(256, 256, 256)` default is the RealMLP-TD(-S)

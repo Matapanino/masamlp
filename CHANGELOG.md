@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.9.1 (2026-09-02)
+
+- **Input routing** — two opt-in options on both estimators that say *how*
+  individual numeric columns reach the network. Both take column **names**,
+  resolved at `fit` against the numeric block the model sees, and both
+  default to `None` = the 0.9.0 behaviour, byte for byte
+  (`tests/test_input_routing.py`):
+  - `num_embedding_cols` — apply `num_embedding` (`"pbld"`, `"plr"`, …) to
+    **these numeric columns only**; every other numeric column bypasses the
+    embedding and enters the first layer linearly, still under
+    `num_scaling`. The flat embedding's layout becomes
+    `[embedded | bypassing | categorical]`, each block in ascending column
+    order. The motivating case: a numeric block that mixes raw measurements
+    (where a periodic embedding buys a flexible 1-D response) with
+    target-encoded log-odds columns (already monotone scores, whose linear
+    use is the point). Positional form: `num_embedding_idx` in
+    `model_params`, a new [shared embedding key](docs/parameters.md).
+    Rejected for token models, which have no linear bypass.
+  - `linear_skip_cols` + `linear_skip_lr_factor` (`realmlp`) — a linear map
+    from those (scaled) numeric columns straight onto the output,
+    `raw = trunk(x) + x_skip @ W_skip + b_skip`, in its **own optimizer param
+    group** at `linear_skip_lr_factor` (default 1.0) with **zero weight
+    decay**. `W_skip`/`b_skip` are zero-initialized, so switching the skip on
+    draws no random numbers: every other parameter stays bit-identical and
+    the fit starts exactly where it would have. The skip reads the numeric
+    input *before* the learnable scaling layer and any numeric embedding, so
+    its weights are plain per-unit output coefficients. Positional form:
+    `linear_skip_idx` in `model_params`.
+  - Column selection runs through registered non-persistent **int64 buffers**
+    and `index_select`, so there is no data-dependent shape or host sync on
+    the forward path: CPU, CUDA and XLA/TPU all trace one graph per batch
+    shape (`tests/test_xla.py::test_input_routing_xla`), and
+    `ens_mode="vectorized"` works unchanged.
+- **Fix** — `ens_mode="vectorized"` unstacked *every* stacked buffer through
+  a strict `load_state_dict` at the end of training, which raises on any
+  **non-persistent** buffer (`ScheduledDropout`'s keep probability, and now
+  the routing index selectors). Those are copied in place instead.
+- `masamlp.models.model_accepts(name, param)` — whether a registered model
+  takes `param` in `model_params`; used to reject an estimator-level option
+  a model does not implement while naming the option the user actually typed.
+
 ## 0.9.0 (2026-09-02)
 
 - **RealMLP-TD fidelity** — the last structural gaps between masaMLP's
