@@ -54,7 +54,14 @@ from masamlp.models.tabr import TabR
 _MODEL_REGISTRY: dict[str, Callable[..., nn.Module]] = {}
 
 # FeatureEmbedding options accepted inside model_params for every model.
-_EMBEDDING_KEYS = ("d_num_embedding", "n_frequencies", "sigma", "cat_emb_dim", "num_scaling")
+_EMBEDDING_KEYS = (
+    "d_num_embedding",
+    "n_frequencies",
+    "sigma",
+    "cat_emb_dim",
+    "num_scaling",
+    "num_embedding_idx",
+)
 
 # Constructor parameters filled in by build_model, not user-facing knobs.
 _NON_PARAM_KEYS = frozenset({"self", "embedding", "embedding_config", "out_dim", "n_label_classes"})
@@ -99,6 +106,18 @@ def _check_model_params(name: str, builder: Callable[..., nn.Module], params: di
         )
 
 
+def model_accepts(name: str, param: str) -> bool:
+    """Whether the registered model ``name`` accepts ``param`` in
+    ``model_params`` — used to reject an estimator-level option a model does
+    not implement with a message naming the option the user actually typed."""
+    if name not in _MODEL_REGISTRY:
+        raise ValueError(f"Unknown model {name!r}. Available: {sorted(_MODEL_REGISTRY)}")
+    signature = inspect.signature(_MODEL_REGISTRY[name]).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.values()):
+        return True
+    return param in signature
+
+
 def build_model(
     name: str,
     model_params: dict[str, object] | None,
@@ -114,6 +133,12 @@ def build_model(
     embed_kwargs = {k: params.pop(k) for k in _EMBEDDING_KEYS if k in params}
     _check_model_params(name, builder, params)
     if getattr(builder, "embedding_kind", "flat") == "tokens":
+        if embed_kwargs.pop("num_embedding_idx", None) is not None:
+            raise ValueError(
+                f"num_embedding_idx (num_embedding_cols) is not supported for the "
+                f"token-based model {name!r}: every feature there becomes a token, so "
+                "there is no linear bypass to route a column to"
+            )
         config = {
             "n_num": n_num,
             "cat_cardinalities": cat_cardinalities,
@@ -156,4 +181,5 @@ __all__ = [
     "t_softmax",
     "register_model",
     "build_model",
+    "model_accepts",
 ]

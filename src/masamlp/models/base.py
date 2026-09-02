@@ -31,6 +31,32 @@ def _auto_emb_dim(cardinality: int) -> int:
     return int(min(32, max(2, round(1.6 * cardinality**0.56))))
 
 
+def _resolve_column_idx(idx: object, n_num: int, param: str) -> list[int] | None:
+    """Validate an input-routing column subset (positions in the numeric
+    block) and return it sorted. ``None`` passes through — the option is off.
+
+    Shared by :class:`FeatureEmbedding`'s ``num_embedding_idx`` and
+    RealMLP's ``linear_skip_idx`` so both reject the same mistakes with the
+    same wording. The estimators resolve column *names* to these positions
+    (see ``masamlp.sklearn``); building a model directly takes positions.
+    """
+    if idx is None:
+        return None
+    if isinstance(idx, int | str):
+        raise ValueError(f"{param} must be a list of column positions, got {idx!r}")
+    positions = [int(i) for i in idx]
+    if not positions:
+        raise ValueError(f"{param} must name at least one column, got an empty list")
+    if len(set(positions)) != len(positions):
+        raise ValueError(f"{param} has duplicate columns: {positions}")
+    bad = sorted(i for i in positions if not 0 <= i < n_num)
+    if bad:
+        raise ValueError(
+            f"{param} positions {bad} are out of range for {n_num} numeric columns"
+        )
+    return sorted(positions)
+
+
 class PeriodicEmbedding(nn.Module):
     """Per-feature ``[cos(2*pi*c*x), sin(2*pi*c*x)]`` with learnable
     frequencies ``c ~ N(0, sigma^2)``; output ``(n, F, 2*n_frequencies)``."""
@@ -119,6 +145,13 @@ class FeatureEmbedding(nn.Module):
 
     ``cat_cardinalities`` already include the reserved unknown/missing slot
     (index 0), matching ``TabularPreprocessor.cat_cardinalities_``.
+
+    ``num_embedding_idx`` (0.9.1) restricts the numeric embedding to a subset
+    of the numeric columns — every other numeric column **bypasses** it and
+    enters the trunk linearly, still under ``num_scaling``. Output layout is
+    then ``[embedded columns | bypassing columns | categorical embeddings]``,
+    each block in ascending column order. ``None`` (the default) embeds every
+    numeric column, exactly as before.
     """
 
     def __init__(
@@ -131,22 +164,51 @@ class FeatureEmbedding(nn.Module):
         sigma: float = 0.1,
         cat_emb_dim: int | None = None,
         num_scaling: bool = False,
+        num_embedding_idx: list[int] | None = None,
     ) -> None:
         super().__init__()
         if n_num == 0 and not cat_cardinalities:
             raise ValueError("model needs at least one numeric or categorical feature")
         self.n_num = n_num
+        self.num_embedding_idx = _resolve_column_idx(
+            num_embedding_idx, n_num, "num_embedding_idx"
+        )
+        if self.num_embedding_idx is not None and num_embedding is None:
+            raise ValueError(
+                "num_embedding_idx routes a subset of the numeric columns through the "
+                "numeric embedding, so it needs num_embedding to be set"
+            )
         self.scaling = ScalingLayer(n_num) if num_scaling and n_num > 0 else None
         self.num_embedding: nn.Module | None = None
+        # Selection runs through fixed int64 buffers: no data-dependent
+        # shapes in ``forward`` (one XLA graph per batch shape) and the
+        # indices follow ``.to(device)``. Non-persistent — they are rebuilt
+        # from ``num_embedding_idx`` when a saved model is loaded.
+        n_embedded = n_num if self.num_embedding_idx is None else len(self.num_embedding_idx)
+        self.n_bypass = n_num - n_embedded
+        if self.num_embedding_idx is not None:
+            taken = set(self.num_embedding_idx)
+            self.register_buffer(
+                "_emb_idx",
+                torch.tensor(self.num_embedding_idx, dtype=torch.int64),
+                persistent=False,
+            )
+            self.register_buffer(
+                "_rest_idx",
+                torch.tensor(
+                    [j for j in range(n_num) if j not in taken], dtype=torch.int64
+                ),
+                persistent=False,
+            )
         d_num = n_num
         if n_num > 0 and num_embedding is not None:
             if num_embedding == "periodic":
-                self.num_embedding = PeriodicEmbedding(n_num, n_frequencies, sigma)
-                d_num = n_num * 2 * n_frequencies
+                self.num_embedding = PeriodicEmbedding(n_embedded, n_frequencies, sigma)
+                d_num = n_embedded * 2 * n_frequencies + self.n_bypass
             elif num_embedding in _PLR_VARIANTS:
                 act, cos_bias, densenet, lite = _PLR_VARIANTS[num_embedding]
                 self.num_embedding = PLREmbedding(
-                    n_num,
+                    n_embedded,
                     d_num_embedding,
                     n_frequencies,
                     sigma,
@@ -155,7 +217,7 @@ class FeatureEmbedding(nn.Module):
                     densenet=densenet,
                     lite=lite,
                 )
-                d_num = n_num * d_num_embedding
+                d_num = n_embedded * d_num_embedding + self.n_bypass
             else:
                 raise ValueError(
                     f"Unknown num_embedding {num_embedding!r}. Expected one of "
@@ -175,8 +237,15 @@ class FeatureEmbedding(nn.Module):
             if self.scaling is not None:
                 x_num = self.scaling(x_num)
             if self.num_embedding is not None:
-                num = self.num_embedding(x_num)
+                x_emb = (
+                    x_num
+                    if self.num_embedding_idx is None
+                    else x_num.index_select(1, self._emb_idx)
+                )
+                num = self.num_embedding(x_emb)
                 parts.append(num.flatten(1) if num.ndim == 3 else num)
+                if self.n_bypass:
+                    parts.append(x_num.index_select(1, self._rest_idx))
             else:
                 parts.append(x_num)
         for j, emb in enumerate(self.cat_embeddings):
