@@ -91,7 +91,13 @@ def test_ft_transformer_num_embedding_idx_none_matches_main_pin():
     forward at a fixed seed, `num_embedding_idx` left at its default `None`.
     Locks the "routing off changes nothing" guarantee across the change that
     added the option to ft_transformer, the same way test_realmlp_fidelity.py
-    locks RealMLP's 0.8.0 fixture."""
+    locks RealMLP's 0.8.0 fixture. A small tolerance, not bit-identity: CI
+    measured ~3e-8 absolute / ~7e-7 relative drift on this exact tensor
+    between the macOS/arm64 machine the pin was recorded on and the CI
+    runners (macOS-14/ubuntu, py3.10/3.12) -- the same cross-machine fp32
+    non-reproducibility test_realmlp_fidelity's `_INIT_ATOL` documents, not a
+    behavioural difference (same seed, same ops, different BLAS/SIMD
+    codepath)."""
     torch.manual_seed(5)
     model = build_model(
         "ft_transformer",
@@ -111,7 +117,7 @@ def test_ft_transformer_num_embedding_idx_none_matches_main_pin():
         [[-0.03631585091352463], [-0.032606251537799835],
          [-0.03982421010732651], [-0.03340648114681244]]
     )
-    torch.testing.assert_close(out, expected, atol=0, rtol=0)
+    torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-5)
 
 
 def test_token_embedding_full_coverage_routing_is_the_unrouted_path():
