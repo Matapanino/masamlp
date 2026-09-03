@@ -53,8 +53,7 @@ def check_vectorizable(model: nn.Module, model_name: str | None = None) -> None:
     if not getattr(model, "supports_vectorized", True):
         # An architecture that already vectorizes an inner ensemble opts out:
         # stacking whole models on top of it is the wrong axis (k * n_ens
-        # member-forwards in one vmap) and the stacked non-persistent buffers
-        # freeze its per-step schedules.
+        # member-forwards in one vmap).
         raise ValueError(
             f"model{where} opts out of ens_mode='vectorized' (it vectorizes its own "
             "inner ensemble); use ens_mode='loop'"
