@@ -149,3 +149,37 @@ def test_vectorized_bn_error_names_model_and_is_early(reg_data):
         MasaRegressor(model="resnet", model_params={"d": 32, "n_blocks": 1},
                       n_ens=2, ens_mode="vectorized", n_epochs=5000,
                       device="cpu", random_state=0).fit(X, y)
+
+
+# ------------------------------------------------------------------ #
+# Vectorized parity with the loop path: the per-step schedules
+# ------------------------------------------------------------------ #
+def test_vectorized_dropout_schedule_follows_the_loop(reg_data):
+    """RealMLP-TD's flat_cos dropout schedule must anneal in vectorized mode
+    too. The keep probability the members apply is the *stacked* ``_keep``
+    buffer, which is also what the unstack step writes back into each member —
+    so the value left on a member is the one its last training step used."""
+    from masamlp.core.trainer import flat_cos
+    from masamlp.models.realmlp import ScheduledDropout
+
+    X, y, _, _ = reg_data
+    p, n_epochs = 0.4, 4
+    kw = dict(
+        model="realmlp",
+        model_params={"hidden_sizes": [16], "dropout": p, "dropout_schedule": "flat_cos"},
+        n_epochs=n_epochs, device="cpu", random_state=0,
+        learning_rate=0.05, optimizer="adam", optimizer_betas=(0.9, 0.95),
+        lr_scheduler="coslog4",
+    )
+
+    def keeps(est):
+        return [float(m._keep) for model in est.models_
+                for m in model.modules() if isinstance(m, ScheduledDropout)]
+
+    loop = keeps(MasaRegressor(n_ens=2, ens_mode="loop", **kw).fit(X, y))
+    vectorized = keeps(MasaRegressor(n_ens=2, ens_mode="vectorized", **kw).fit(X, y))
+    # 300 rows train full-batch, so the last of the n_epochs steps sits at
+    # t = (n_epochs - 1) / n_epochs — well past the frozen 1 - p.
+    expected = 1.0 - p * flat_cos((n_epochs - 1) / n_epochs)
+    assert loop == pytest.approx([expected] * 2)
+    assert vectorized == pytest.approx(loop)

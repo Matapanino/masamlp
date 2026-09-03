@@ -160,6 +160,22 @@ def fit_vectorized(
         raise ValueError(f"Unknown lr_scheduler {config.lr_scheduler!r}")
     wd_scheduled = config.weight_decay_schedule == "flat_cos"
     model_has_schedule = hasattr(base, "set_schedule_t")
+    # ``set_schedule_t`` moves non-persistent buffers (ScheduledDropout's keep
+    # probability), but ``base`` sits on the meta device and every buffer the
+    # vmapped forward reads comes from the stacked ``buffers`` dict. Run the
+    # hook on a live member instead and broadcast the buffers it owns into
+    # their stacked slices, so the members follow the loop path's schedule.
+    # Those buffers hold no per-member state (they are schedule values and
+    # fixed index selectors), which is why member 0's copy speaks for all k.
+    sched_pairs = (
+        [
+            (buffers[name], live)
+            for name, live in models[0].named_buffers()
+            if name in buffers and name not in set(models[0].state_dict())
+        ]
+        if model_has_schedule
+        else []
+    )
 
     n = len(train)
     batch_size = _resolve_batch_size(config, n)
@@ -224,7 +240,9 @@ def fit_vectorized(
                 for group in optimizer.param_groups:
                     group["weight_decay"] = wd_now * group["wd_factor"]
             if model_has_schedule:
-                base.set_schedule_t(t)
+                models[0].set_schedule_t(t)
+                for stacked, live in sched_pairs:
+                    stacked.copy_(live.expand_as(stacked))
             global_step += 1
 
             raw = vmodel(params, buffers, batch.x_num, batch.x_cat)  # (k, n, out)
