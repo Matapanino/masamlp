@@ -26,8 +26,8 @@ def _forward(name, n_num=4, cards=(3, 5), out_dim=2, num_embedding=None, n=32):
 
 def _raw_shape(name, n=32, out_dim=2):
     """Inner-ensemble models emit per-member raw outputs (n, k, out_dim)."""
-    if name == "tabm":
-        return (n, TINY_PARAMS["tabm"]["k"], out_dim)
+    if name in ("tabm", "realm"):
+        return (n, TINY_PARAMS[name]["k"], out_dim)
     return (n, out_dim)
 
 
