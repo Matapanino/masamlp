@@ -53,8 +53,7 @@ def check_vectorizable(model: nn.Module, model_name: str | None = None) -> None:
     if not getattr(model, "supports_vectorized", True):
         # An architecture that already vectorizes an inner ensemble opts out:
         # stacking whole models on top of it is the wrong axis (k * n_ens
-        # member-forwards in one vmap) and the stacked non-persistent buffers
-        # freeze its per-step schedules.
+        # member-forwards in one vmap).
         raise ValueError(
             f"model{where} opts out of ens_mode='vectorized' (it vectorizes its own "
             "inner ensemble); use ens_mode='loop'"
@@ -148,7 +147,8 @@ def fit_vectorized(
         for (lf, wf), ps in group_map.items()
     ]
     optimizer = _make_optimizer(
-        config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas
+        config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas,
+        config.weight_decay_mode,
     )
     scheduler = None
     per_step_schedule = None
@@ -160,6 +160,38 @@ def fit_vectorized(
         raise ValueError(f"Unknown lr_scheduler {config.lr_scheduler!r}")
     wd_scheduled = config.weight_decay_schedule == "flat_cos"
     model_has_schedule = hasattr(base, "set_schedule_t")
+    # ``set_schedule_t`` moves non-persistent buffers (ScheduledDropout's keep
+    # probability), but ``base`` sits on the meta device and every buffer the
+    # vmapped forward reads comes from the stacked ``buffers`` dict. Run the
+    # hook on a live member instead and broadcast the buffers it owns into
+    # their stacked slices, so the members follow the loop path's schedule.
+    # Those buffers hold no per-member state (they are schedule values and
+    # fixed index selectors), which is why member 0's copy speaks for all k.
+    persistent_names = set(models[0].state_dict())
+    sched_pairs = (
+        [
+            (buffers[name], live)
+            for name, live in models[0].named_buffers()
+            if name in buffers and name not in persistent_names
+        ]
+        if model_has_schedule
+        else []
+    )
+    # pytabkit's `ls_eps_sched`: the smoothing epsilon is scaled per step and
+    # enters the LABELS, so the objective's attribute is what moves.
+    _LS_SCHEDULES = {"coslog4": _coslog4, "flat_cos": flat_cos}
+    if config.label_smoothing_schedule not in ("none", *_LS_SCHEDULES):
+        raise ValueError(
+            f"Unknown label_smoothing_schedule {config.label_smoothing_schedule!r}. "
+            f"Expected 'none' or one of {sorted(_LS_SCHEDULES)}"
+        )
+    ls_schedule = _LS_SCHEDULES.get(config.label_smoothing_schedule)
+    ls_base = getattr(objective, "label_smoothing", None)
+    if ls_schedule is not None and ls_base is None:
+        raise ValueError(
+            "label_smoothing_schedule needs an objective with a "
+            "`label_smoothing` attribute (binary_logistic / multiclass_softmax)"
+        )
 
     n = len(train)
     batch_size = _resolve_batch_size(config, n)
@@ -167,7 +199,14 @@ def fit_vectorized(
     gen = torch.Generator()
     if config.random_state is not None:
         gen.manual_seed(config.random_state)
-    steps_per_epoch = 1 if full_batch else int(np.ceil(n / batch_size))
+    # drop_last (pytabkit's default) makes every step a full batch; with
+    # fewer rows than one batch there is nothing to drop.
+    drop_last = bool(config.drop_last) and not full_batch and n >= batch_size
+    steps_per_epoch = (
+        1
+        if full_batch
+        else int(n // batch_size if drop_last else np.ceil(n / batch_size))
+    )
     total_steps = max(1, config.n_epochs * steps_per_epoch)
     global_step = 0
 
@@ -212,6 +251,8 @@ def fit_vectorized(
             if full_batch
             else torch.randperm(n, generator=gen).to(device).split(batch_size)
         )
+        if drop_last and len(batches[-1]) < batch_size:
+            batches = batches[:-1]
         for idx in batches:
             batch = train if idx is None else train.slice(idx)
             t = global_step / total_steps
@@ -224,7 +265,11 @@ def fit_vectorized(
                 for group in optimizer.param_groups:
                     group["weight_decay"] = wd_now * group["wd_factor"]
             if model_has_schedule:
-                base.set_schedule_t(t)
+                models[0].set_schedule_t(t)
+                for stacked, live in sched_pairs:
+                    stacked.copy_(live.expand_as(stacked))
+            if ls_schedule is not None:
+                objective.label_smoothing = ls_base * ls_schedule(t)
             global_step += 1
 
             raw = vmodel(params, buffers, batch.x_num, batch.x_cat)  # (k, n, out)
@@ -275,6 +320,11 @@ def fit_vectorized(
             if all(stopper.should_stop for stopper in stoppers):
                 break
 
+    if ls_schedule is not None:
+        # The schedule mutates the objective in place; hand it back unchanged
+        # so a reused objective (refits) is not left at whatever epsilon the
+        # last step happened to set.
+        objective.label_smoothing = ls_base
     if stoppers is not None:
         with torch.no_grad():
             for j, best in enumerate(best_slices):

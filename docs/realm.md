@@ -116,9 +116,8 @@ Two `realmlp` behaviours deliberately do **not** carry over:
   implemented for `realm`; the estimator says so by name.
 - `ens_mode="vectorized"` is rejected. `realm` already vectorizes its inner
   ensemble; stacking whole models on top of it with `torch.func` is the wrong
-  axis (k × `n_ens` member-forwards in one vmap) and the stacked
-  non-persistent buffers freeze the scheduled-dropout probability. The outer
-  `n_ens` axis composes fine in the default loop mode.
+  axis (k × `n_ens` member-forwards in one vmap). The outer `n_ens` axis
+  composes fine in the default loop mode.
 
 ## Usage
 

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 
 from masamlp.classifier import MasaClassifier
 from masamlp.regressor import MasaRegressor
@@ -149,3 +150,137 @@ def test_vectorized_bn_error_names_model_and_is_early(reg_data):
         MasaRegressor(model="resnet", model_params={"d": 32, "n_blocks": 1},
                       n_ens=2, ens_mode="vectorized", n_epochs=5000,
                       device="cpu", random_state=0).fit(X, y)
+
+
+# ------------------------------------------------------------------ #
+# Vectorized parity with the loop path: the per-step schedules
+# ------------------------------------------------------------------ #
+def test_vectorized_dropout_schedule_follows_the_loop(reg_data):
+    """RealMLP-TD's flat_cos dropout schedule must anneal in vectorized mode
+    too. The keep probability the members apply is the *stacked* ``_keep``
+    buffer, which is also what the unstack step writes back into each member —
+    so the value left on a member is the one its last training step used."""
+    from masamlp.core.trainer import flat_cos
+    from masamlp.models.realmlp import ScheduledDropout
+
+    X, y, _, _ = reg_data
+    p, n_epochs = 0.4, 4
+    kw = dict(
+        model="realmlp",
+        model_params={"hidden_sizes": [16], "dropout": p, "dropout_schedule": "flat_cos"},
+        n_epochs=n_epochs, device="cpu", random_state=0,
+        learning_rate=0.05, optimizer="adam", optimizer_betas=(0.9, 0.95),
+        lr_scheduler="coslog4",
+    )
+
+    def keeps(est):
+        return [float(m._keep) for model in est.models_
+                for m in model.modules() if isinstance(m, ScheduledDropout)]
+
+    loop = keeps(MasaRegressor(n_ens=2, ens_mode="loop", **kw).fit(X, y))
+    vectorized = keeps(MasaRegressor(n_ens=2, ens_mode="vectorized", **kw).fit(X, y))
+    # 300 rows train full-batch, so the last of the n_epochs steps sits at
+    # t = (n_epochs - 1) / n_epochs — well past the frozen 1 - p.
+    expected = 1.0 - p * flat_cos((n_epochs - 1) / n_epochs)
+    assert loop == pytest.approx([expected] * 2)
+    assert vectorized == pytest.approx(loop)
+
+
+def test_vectorized_honours_weight_decay_mode(monkeypatch, reg_data):
+    """``weight_decay_mode`` picks the optimizer class that implements the
+    decay convention (AdamW decouples, Adam couples). The vectorized path must
+    build the same one the loop path builds — and must actually train with it."""
+    import masamlp.core.ensemble as ens_mod
+    import masamlp.core.trainer as trainer_mod
+
+    X, y, X_test, _ = reg_data
+    base = dict(_KW, n_epochs=1, weight_decay=0.1)
+
+    def spy(module) -> list[type]:
+        seen: list[type] = []
+        real = module._make_optimizer
+
+        def wrapper(*args, **kwargs):
+            optimizer = real(*args, **kwargs)
+            seen.append(type(optimizer))
+            return optimizer
+
+        monkeypatch.setattr(module, "_make_optimizer", wrapper)
+        return seen
+
+    loop_seen, vectorized_seen = spy(trainer_mod), spy(ens_mod)
+    for optimizer, mode in [("adam", "auto"), ("adamw", "coupled")]:
+        kw = dict(base, optimizer=optimizer, weight_decay_mode=mode)
+        MasaRegressor(n_ens=1, ens_mode="loop", **kw).fit(X, y)
+        MasaRegressor(n_ens=2, ens_mode="vectorized", **kw).fit(X, y)
+    assert vectorized_seen == loop_seen == [torch.optim.Adam, torch.optim.Adam]
+
+    # ... and the choice reaches the weights: coupling the decay into the
+    # gradient is not the same update as decoupling it.
+    fit = dict(_KW, n_epochs=8, weight_decay=0.5, learning_rate=0.01, optimizer="adam")
+    coupled = MasaRegressor(n_ens=2, ens_mode="vectorized",
+                            weight_decay_mode="auto", **fit).fit(X, y).predict(X_test)
+    decoupled = MasaRegressor(n_ens=2, ens_mode="vectorized",
+                              weight_decay_mode="decoupled", **fit).fit(X, y).predict(X_test)
+    assert not np.allclose(coupled, decoupled)
+
+
+def test_vectorized_label_smoothing_schedule_scales_and_restores(clf_data):
+    """``label_smoothing_schedule`` scales the objective's epsilon per step in
+    vectorized mode too, and hands the objective back at its original value."""
+    from masamlp.core.objectives import BinaryLogistic
+    from masamlp.core.trainer import _coslog4
+
+    X, y, _, _ = clf_data
+    seen: list[float] = []
+
+    class Recording(BinaryLogistic):
+        def per_sample_loss(self, y_true, raw_pred):
+            seen.append(self.label_smoothing)
+            return super().per_sample_loss(y_true, raw_pred)
+
+    objective = Recording(0.2)
+    MasaClassifier(
+        n_ens=2, ens_mode="vectorized", model="realmlp",
+        model_params={"hidden_sizes": [16]}, objective=objective,
+        n_epochs=3, batch_size=64, device="cpu", random_state=0,
+        label_smoothing_schedule="coslog4",
+    ).fit(X, y)
+    assert seen[0] == pytest.approx(0.2 * _coslog4(0.0))      # first step at t=0
+    assert 0.0 < max(seen) <= 0.2 + 1e-12
+    assert objective.label_smoothing == 0.2                   # restored
+
+    with pytest.raises(ValueError, match="label_smoothing_schedule"):
+        MasaClassifier(
+            n_ens=2, ens_mode="vectorized", model="realmlp",
+            model_params={"hidden_sizes": [8]}, n_epochs=1, device="cpu",
+            label_smoothing_schedule="nope",
+        ).fit(X, y)
+
+
+def test_vectorized_drop_last_drops_the_short_batch(clf_data):
+    """With ``drop_last`` a vectorized epoch runs ``floor(n / batch_size)``
+    steps, exactly as the loop path does."""
+    from masamlp.core.objectives import BinaryLogistic
+
+    X, y, _, _ = clf_data                      # 300 rows
+
+    def steps(drop_last: bool) -> int:
+        count = [0]
+
+        class Counting(BinaryLogistic):
+            def per_sample_loss(self, y_true, raw_pred):
+                count[0] += 1
+                return super().per_sample_loss(y_true, raw_pred)
+
+        MasaClassifier(
+            n_ens=2, ens_mode="vectorized", model="realmlp",
+            model_params={"hidden_sizes": [8]}, objective=Counting(),
+            n_epochs=2, batch_size=125, device="cpu", random_state=0,
+            drop_last=drop_last,
+        ).fit(X, y)
+        return count[0]
+
+    # 125 + 125 + a 50-row tail, 2 epochs, and one loss per member per step.
+    assert steps(False) == 3 * 2 * 2
+    assert steps(True) == 2 * 2 * 2

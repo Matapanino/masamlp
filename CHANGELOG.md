@@ -36,12 +36,30 @@
     the full TD recipe (`tests/test_realm.py`).
   - Not carried over, deliberately: `linear_skip_idx` stays a `realmlp`
     option, and `ens_mode="vectorized"` is rejected for `realm` — it already
-    vectorizes its inner ensemble, and stacking whole models on top freezes
-    the scheduled-dropout buffer. The outer `n_ens` axis composes in the
-    default loop mode.
+    vectorizes its inner ensemble, so stacking whole models on top is the
+    wrong axis. The outer `n_ens` axis composes in the default loop mode.
 - Models may now set `supports_vectorized = False` to opt out of
   `ens_mode="vectorized"` with a message naming the model, instead of
   silently training something else.
+- **Fixed** — three trainer settings `ens_mode="vectorized"` silently dropped,
+  so a vectorized ensemble trained a different recipe from the loop path it is
+  supposed to be a faster copy of (`tests/test_ensemble.py`). The loop path is
+  unchanged:
+  - **Scheduled dropout was frozen.** `stack_module_state` stacks
+    `ScheduledDropout`'s non-persistent `_keep` buffer, and the vmapped forward
+    reads only the stacked copies — so `set_schedule_t`, called on the
+    meta-device template whose buffers nothing reads, moved nothing and every
+    member trained at the initial `1 - p` for the whole run. The hook now runs
+    on a live member and its buffers are broadcast into the stacked slices
+    (measured: 4 epochs of `dropout=0.4` + `dropout_schedule="flat_cos"` ended
+    at keep 0.600 vectorized vs 0.800 in the loop).
+  - **`weight_decay_mode` was ignored**, falling through to `_make_optimizer`'s
+    own `"decoupled"` default: every vectorized fit built an AdamW. The default
+    was affected too — `optimizer="adam"` couples the decay in the loop path and
+    decoupled it here.
+  - **`label_smoothing_schedule` and `drop_last` were ignored** — the smoothing
+    epsilon stayed constant (and an unknown schedule name was not rejected), and
+    the short tail batch of each epoch was still trained on.
 
 ## 0.9.1 (2026-09-02)
 
