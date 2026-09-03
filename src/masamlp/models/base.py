@@ -456,6 +456,17 @@ class TokenEmbedding(nn.Module):
     ``d_embedding=d_token``) or stay a flat vector (TabTransformer style,
     optionally passed through a flat numeric embedding).
 
+    ``num_embedding_idx`` (0.9.4) restricts the PLR-family tokenizer to a
+    subset of the numeric columns when ``tokenize_numeric=True``: the listed
+    columns still become PLR tokens, every other numeric column becomes a
+    plain linear token (the FT-Transformer paper's own numeric tokenizer,
+    ``x_j * w_j + b_j``) instead of bypassing tokenization entirely — every
+    numeric column still gets exactly one token either way. ``None`` (the
+    default) tokenizes every numeric column through ``num_embedding``,
+    unchanged from before. Rejected when ``tokenize_numeric=False``
+    (TabTransformer): numerics never become tokens there, so there is no
+    per-column token to route.
+
     ``forward`` returns ``(tokens, num_flat)`` with shapes
     ``(n, n_tokens, d_token)`` and ``(n, d_num_flat)``.
     """
@@ -472,6 +483,7 @@ class TokenEmbedding(nn.Module):
         cat_emb_dim: int | None = None,  # ignored: tokens are d_token wide
         num_scaling: bool = False,
         tokenize_numeric: bool = True,
+        num_embedding_idx: list[int] | None = None,
     ) -> None:
         super().__init__()
         if n_num == 0 and not cat_cardinalities:
@@ -480,8 +492,43 @@ class TokenEmbedding(nn.Module):
         self.tokenize_numeric = tokenize_numeric
         self.scaling = ScalingLayer(n_num) if num_scaling and n_num > 0 else None
         self.num_tokens: nn.Module | None = None
+        self.num_bypass_tokens: nn.Module | None = None
         self.num_flat_embedding: FeatureEmbedding | None = None
         self.d_num_flat = 0
+        self.num_embedding_idx = _resolve_column_idx(
+            num_embedding_idx, n_num, "num_embedding_idx"
+        )
+        if self.num_embedding_idx is not None:
+            if not tokenize_numeric:
+                raise ValueError(
+                    "num_embedding_idx (num_embedding_cols) is not supported here: "
+                    "numeric features never become tokens in this model (they bypass "
+                    "into the flat head), so there is no per-column token to route"
+                )
+            if num_embedding is None:
+                raise ValueError(
+                    "num_embedding_idx routes a subset of the numeric columns through "
+                    "the numeric embedding, so it needs num_embedding to be set"
+                )
+        n_embedded = n_num if self.num_embedding_idx is None else len(self.num_embedding_idx)
+        n_bypass = n_num - n_embedded
+        if self.num_embedding_idx is not None:
+            taken = set(self.num_embedding_idx)
+            # Fixed int64 buffers, not a data-dependent gather: no shape
+            # variation in ``forward`` (one XLA graph per batch shape), and
+            # the indices follow ``.to(device)`` with the rest of the module.
+            self.register_buffer(
+                "_emb_idx",
+                torch.tensor(self.num_embedding_idx, dtype=torch.int64),
+                persistent=False,
+            )
+            self.register_buffer(
+                "_rest_idx",
+                torch.tensor(
+                    [j for j in range(n_num) if j not in taken], dtype=torch.int64
+                ),
+                persistent=False,
+            )
         if n_num > 0:
             if tokenize_numeric:
                 if num_embedding is None:
@@ -489,7 +536,7 @@ class TokenEmbedding(nn.Module):
                 elif num_embedding in _PLR_VARIANTS:
                     act, cos_bias, densenet, lite = _PLR_VARIANTS[num_embedding]
                     self.num_tokens = PLREmbedding(
-                        n_num,
+                        n_embedded,
                         d_embedding=d_token,
                         n_frequencies=n_frequencies,
                         sigma=sigma,
@@ -499,6 +546,8 @@ class TokenEmbedding(nn.Module):
                         lite=lite,
                         flatten=False,
                     )
+                    if n_bypass:
+                        self.num_bypass_tokens = LinearTokens(n_bypass, d_token)
                 else:
                     raise ValueError(
                         f"num_embedding {num_embedding!r} is not supported for "
@@ -532,7 +581,14 @@ class TokenEmbedding(nn.Module):
             if self.scaling is not None:
                 x_num = self.scaling(x_num)
             if self.num_tokens is not None:
-                tokens.append(self.num_tokens(x_num))
+                if self.num_embedding_idx is None:
+                    tokens.append(self.num_tokens(x_num))
+                else:
+                    x_emb = x_num.index_select(1, self._emb_idx)
+                    tokens.append(self.num_tokens(x_emb))
+                    if self.num_bypass_tokens is not None:
+                        x_rest = x_num.index_select(1, self._rest_idx)
+                        tokens.append(self.num_bypass_tokens(x_rest))
             else:
                 num_flat = self.num_flat_embedding(x_num, x_num.new_zeros(
                     x_num.shape[0], 0, dtype=torch.int64))
