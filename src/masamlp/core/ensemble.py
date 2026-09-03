@@ -167,11 +167,12 @@ def fit_vectorized(
     # their stacked slices, so the members follow the loop path's schedule.
     # Those buffers hold no per-member state (they are schedule values and
     # fixed index selectors), which is why member 0's copy speaks for all k.
+    persistent_names = set(models[0].state_dict())
     sched_pairs = (
         [
             (buffers[name], live)
             for name, live in models[0].named_buffers()
-            if name in buffers and name not in set(models[0].state_dict())
+            if name in buffers and name not in persistent_names
         ]
         if model_has_schedule
         else []
