@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.3 (unreleased)
+
+- **Faithful full TabM** — `model="tabm"` now accepts
+  `model_params={"variant": "mini" | "full"}`. Mini preserves the 0.9.2
+  predictions byte for byte; full puts official BatchEnsemble `r`/`s`/bias
+  parameters on every plain ReLU-MLP linear and uses independent uniformly
+  initialized member heads.
+- **TabM† PLE-vB** — `num_embedding="ple"` fits quantile boundaries on the
+  training rows, stores them with the estimator, and implements the fixed
+  piecewise-linear encoding plus zero-initialized projection and linear
+  residual. The shared width key is `model_params["d_num_embedding"]`; bin
+  count is `model_params["n_bins"]` (default 48).
+- **Independent member batches** — `share_training_batches=False` gives each
+  inner-ensemble member its own shuffled row stream while keeping labels and
+  sample weights aligned. The default remains `True` for compatibility.
+- **Documentation correction** — `plr-lite` is a Fourier/periodic embedding,
+  not the TabM paper's PLE-based TabM†.
+
 ## 0.9.2 (2026-09-03)
 
 - **`model="realm"` — RealM: the RealMLP backbone under TabM-style *full*

@@ -12,11 +12,11 @@ models (attention over per-feature embeddings) instead set a class attribute
 from the config with their own token width.
 
 Models may instead return per-member outputs ``(n, k, out_dim)`` — dim 1 is
-treated as a weight-shared inner ensemble (ADR 0005): the trainer trains
-every member on each row (losses flatten per member, so ``sample_weight``
-and custom objectives work unchanged) and predictions are averaged
-member-wise on the prediction scale. ``tabm`` and ``realm`` are the
-built-in examples.
+treated as a weight-shared inner ensemble (ADR 0005). The trainer either
+broadcasts each row batch or gathers independently shuffled member rows;
+losses flatten per member, so aligned ``sample_weight`` and custom objectives
+work unchanged. Predictions are averaged member-wise on the prediction
+scale. ``tabm`` and ``realm`` are the built-in examples.
 """
 
 from __future__ import annotations

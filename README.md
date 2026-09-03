@@ -52,7 +52,7 @@ builds on.
 | name | source | notes |
 |---|---|---|
 | `resnet` | Gorishniy et al. 2021 (arXiv:2106.11959) | default; strong baseline |
-| `tabm` | Gorishniy et al. 2024 (arXiv:2410.24210) | parameter-efficient deep ensemble: `k` members share one MLP backbone (TabM-mini) and predictions are averaged — works with every objective, `sample_weight`, and custom losses |
+| `tabm` | Gorishniy et al. 2024 (arXiv:2410.24210) | parameter-efficient deep ensemble: byte-compatible `variant="mini"`, or headline full BatchEnsemble on every backbone linear with `variant="full"`; supports quantile PLE-vB (`num_embedding="ple"`) and independent member batches |
 | `realmlp` | Holzmüller et al. 2024 (arXiv:2407.04491) | RealMLP-TD-S architecture (scaling layer, NTP linear layers, SELU/Mish); pair with `masamlp.realmlp_params(task)` for the full training recipe |
 | `realm` | Holzmüller et al. 2024 + Gorishniy et al. 2024 | **RealMLP backbone under TabM-style full BatchEnsemble** (new in 0.9.2): `k` members share one weight matrix per layer and differ through rank-1 `r`/`s` adapters, per-member biases and per-member heads — diversity is *learned jointly* instead of bought with k independent fits. `k`, `member_init`, `adapter_lr_factor`; preset `masamlp.realm_td_params(task, k=...)`. See [docs/realm.md](docs/realm.md) |
 | `ft_transformer` | Gorishniy et al. 2021 (arXiv:2106.11959) | feature tokens + [CLS] + PreNorm/ReGLU transformer, per the rtdl reference |
@@ -115,10 +115,10 @@ The tricks from the RealMLP paper are estimator-level options usable with
 
 - `numeric_scaler="rssc"` — robust scale + smooth clip preprocessing
 - `cat_encoding="onehot"` — RealMLP-style one-hot (binary → ±1, missing → 0)
-- `num_embedding="pbld" | "plr" | "plr-lite" | "pl" | "periodic"` — the
-  numeric embedding zoo (arXiv:2203.05556 + PBLD); token models
-  (`ft_transformer`, `tab_transformer`) use the same options as feature
-  tokenizers
+- `num_embedding="ple" | "pbld" | "plr" | "plr-lite" | "pl" | "periodic"` —
+  PLE-vB (`"ple"`, the TabM† embedding) plus the Fourier/periodic embedding
+  zoo (arXiv:2203.05556 + PBLD); token models (`ft_transformer`,
+  `tab_transformer`) use the PLR family as feature tokenizers, but not PLE
 - `num_embedding_cols=[...]` / `linear_skip_cols=[...]` (new in 0.9.1) —
   **input routing**: embed only *these* numeric columns and let the rest enter
   the first layer linearly, and/or send *these* numeric columns straight to
@@ -139,8 +139,8 @@ The tricks from the RealMLP paper are estimator-level options usable with
   `ft_transformer` (`k>1`, new in 0.8.0) run `k` weight-shared members inside
   one model, composing with the outer `n_ens`; the `n_ens·k` members are
   exposed by `predict_members` / `predict_proba_members`. `tabm` and
-  `ft_transformer` use the TabM-**mini** adapter; `realm` uses **full
-  BatchEnsemble** over the RealMLP trunk
+  `ft_transformer` use the TabM-**mini** adapter; `tabm` additionally offers
+  `variant="full"`, while `realm` uses **full BatchEnsemble** over the RealMLP trunk
 - `weight_decay_schedule="flat_cos"` — RealMLP-TD's scheduled weight decay
   (param groups can opt out, e.g. biases)
 - `ema_decay=0.999` — exponential moving average (Polyak averaging) of the

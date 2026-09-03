@@ -13,14 +13,12 @@ Two published ideas, composed:
   the per-member losses) and predictions are averaged on the prediction
   scale.
 
-:mod:`masamlp.models.tabm` already implements *TabM-mini*: a single
-multiplicative adapter on the shared embedding, over a plain ReLU MLP. RealM
-is the **full** BatchEnsemble variant instead — every layer carries its own
-input adapter ``r`` and output adapter ``s`` — over the RealMLP trunk, so
-member representations keep diverging with depth rather than being fixed at
-the input. The point of the architecture is that diversity is **learned
-jointly** on a shared feature extractor, where the outer ``n_ens`` axis buys
-diversity with k independent fits and k times the compute.
+:mod:`masamlp.models.tabm` implements both TabM-mini and the paper's full
+plain-ReLU TabM. RealM applies the same **full** BatchEnsemble placement to
+the RealMLP trunk instead: every layer carries its own input adapter ``r``
+and output adapter ``s``. The point of the architecture is that diversity is
+**learned jointly** on a shared feature extractor, where the outer ``n_ens``
+axis buys diversity with k independent fits and k times the compute.
 
 Per layer, the member-``i`` weight is ``W ⊙ (s_i r_iᵀ)``, but it is **never
 materialized**: the forward pass broadcasts the adapters around one shared

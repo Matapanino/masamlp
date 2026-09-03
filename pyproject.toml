@@ -30,7 +30,13 @@ dependencies = [
 bench = ["lightgbm>=4.0", "pytabkit>=1.5", "optuna>=3"]
 # API reference generation (scripts/build_docs.sh).
 docs = ["pdoc>=14"]
-dev = ["pytest>=7.0", "pytest-cov>=4", "ruff>=0.4"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4",
+    "ruff>=0.4",
+    "tabm==0.0.3",
+    "rtdl-num-embeddings==0.0.12",
+]
 
 [project.urls]
 Homepage = "https://github.com/Matapanino/masamlp"

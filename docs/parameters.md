@@ -7,7 +7,7 @@ Every knob in masaMLP lives in one of three places:
 - **`model_params`** — a dict forwarded to the selected architecture's
   constructor. Depth, width, dropout, and every other architecture knob is
   free per model; the per-architecture tables below are the complete list.
-- **Shared embedding keys** — five keys accepted *inside* `model_params` for
+- **Shared embedding keys** — seven keys accepted *inside* `model_params` for
   every model; they configure the feature embedding rather than the trunk.
 
 ```python
@@ -79,6 +79,7 @@ Built-in metrics (string values):
 | `weight_decay_mode` | `"auto"` | How weight decay enters the update. `"auto"` keeps each optimizer's own convention (`adamw` decoupled, `adam`/`sgd` coupled) — the pre-0.9.0 behaviour. `"decoupled"` is AdamW's `p *= 1 - lr·wd`; `"coupled"` adds `wd·p` to the gradient so it passes through Adam's second moment. pytabkit's RealMLP-TD is **decoupled**. |
 | `label_smoothing_schedule` | `"none"` | Per-step schedule on the objective's `label_smoothing` (pytabkit's `ls_eps_sched`): `"none"`, `"coslog4"` (RealMLP-TD — 0 at both ends of training, four cosine cycles between) or `"flat_cos"`. Needs an objective with a `label_smoothing` attribute. |
 | `drop_last` | `False` | Drop each epoch's final short batch, so every optimizer step sees exactly `batch_size` rows (pytabkit's dataloader default). Also shortens the per-step schedule denominator to `floor(n/batch_size)` steps per epoch. |
+| `share_training_batches` | `True` | Inner ensembles (`tabm`, `realm`): `True` broadcasts the same shuffled row batch to every member (the historical code default); `False` gives every member an independently shuffled row stream, as in the TabM paper's headline experiments. Labels and `sample_weight` follow the member-indexed rows. |
 | `grad_clip` | `None` | Global gradient-norm clip; `None` disables. |
 | `ema_decay` | `None` | Exponential moving average (Polyak averaging) of the weights, e.g. `0.999`; evaluation, early stopping, and the final model use the averaged parameters. Not supported with `ens_mode="vectorized"`. |
 
@@ -90,7 +91,7 @@ Built-in metrics (string values):
 | `categorical_features` | `"auto"` | `"auto"` detects categorical columns from DataFrame dtypes; or pass a list of column names/indices. |
 | `cat_encoding` | `"embedding"` | `"embedding"` (per-column `nn.Embedding`, index 0 reserved for unknown/missing), `"onehot"` (RealMLP-style: binary → ±1, missing → 0), or `"hybrid"` (one-hot up to 9 categories, embeddings above — RealMLP-TD). |
 | `onehot_max_categories` | `9` | Cardinality threshold for `cat_encoding="hybrid"`: columns with at most this many observed categories are one-hot encoded (and then scaled with the numerics), the rest get embeddings. pytabkit's `max_one_hot_cat_size` counts its reserved missing slot as well, so its 18 corresponds to `17` here. |
-| `num_embedding` | `None` | Numeric-feature embedding: `None` (raw), `"periodic"`, or the PLR family `"pl"` / `"plr"` / `"plr-lite"` / `"pbld"` (arXiv:2203.05556 + PBLD per pytabkit). Token models (`ft_transformer`, `tab_transformer`) accept the PLR family (not `"periodic"`) as their feature tokenizer. Tune the embedding itself via the [shared embedding keys](#shared-embedding-keys-inside-model_params). |
+| `num_embedding` | `None` | Numeric-feature embedding: `None` (raw), `"ple"` (quantile-bin PLE-vB from the TabM paper), `"periodic"`, or the Fourier/periodic PLR family `"pl"` / `"plr"` / `"plr-lite"` / `"pbld"` (arXiv:2203.05556 + PBLD per pytabkit). Token models accept the PLR family, but not `"ple"`/`"periodic"`, as their tokenizer. Tune the embedding via the [shared embedding keys](#shared-embedding-keys-inside-model_params). |
 | `num_embedding_cols` | `None` | Input routing: apply `num_embedding` to **these numeric columns only** (a list of column names). Every other numeric column bypasses the embedding and enters the first layer linearly, still under `num_scaling`. `None` embeds all of them. Requires `num_embedding`; not available on token models. |
 | `linear_skip_cols` | `None` | Input routing: add a linear map from these (scaled) numeric columns straight onto the output — `raw = trunk(x) + x_skip @ W_skip + b_skip`. `W_skip`/`b_skip` are zero-initialized, so the fit starts exactly where it would without the skip, and they train in their own param group with **zero weight decay**. `model="realmlp"` only. |
 | `linear_skip_lr_factor` | `1.0` | Learning-rate factor for the `linear_skip_cols` parameters. `0.0` freezes them at zero (an exact no-op control). |
@@ -168,8 +169,9 @@ Accepted in `model_params` for **every** model; they configure the
 
 | Key | Default | Meaning |
 |---|---|---|
-| `d_num_embedding` | `16` | Output dim per numeric feature for the PLR-family `num_embedding`. Token models ignore it in favor of the token width. |
+| `d_num_embedding` | `16` | Output dim per numeric feature for `"ple"` and the PLR-family embeddings. This is the shared embedding-width key used by TabM†. Token models ignore it in favor of the token width. |
 | `n_frequencies` | `16` | Number of random frequencies for `"periodic"`/PLR embeddings. |
+| `n_bins` | `48` | Quantile-bin count for `num_embedding="ple"`. Boundaries are fitted on training rows only at `linspace(0, 1, n_bins + 1)`, duplicate quantiles are removed, and the fitted boundaries are serialized with the estimator. |
 | `sigma` | `0.1` | Scale of the initial frequencies (`c ~ N(0, sigma²)`); the most sensitive periodic-embedding knob in arXiv:2203.05556. |
 | `cat_emb_dim` | `None` | Per-column categorical embedding dim; `None` = auto (`min(32, max(2, round(1.6 · cardinality^0.56)))`). Token models ignore it (tokens are `d_token`/`d_block` wide). |
 | `num_scaling` | `False` | Learnable per-feature scale on numeric inputs before embedding (RealMLP's scaling layer, trained at 6× lr there). Defaults to `True` when `model="realmlp"`. |
@@ -202,21 +204,37 @@ defaults.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `k` | `32` | Ensemble members. All members share the embedding and the MLP backbone; each gets its own multiplicative adapter on the embedding and its own output head, so the parameter cost stays ~1× a single MLP. `k=1` is a plain MLP. |
+| `variant` | `"mini"` | `"mini"` preserves masaMLP 0.9.2 byte for byte: one input adapter, shared plain MLP, independent heads. `"full"` is headline TabM: every backbone linear has shared `W` plus member-specific `r`, `s`, and bias, with an independent head. |
+| `k` | `32` | Inner-ensemble members, vectorized on a static `(n, k, d)` axis. |
 | `d` | `512` | Backbone width. |
-| `n_blocks` | `3` | Backbone depth (Linear → ReLU → Dropout blocks). |
+| `n_blocks` | automatic | Plain `Linear → ReLU → Dropout` depth. Mini stays at 3. Full defaults to 3 with raw numerics and 2 when a numeric embedding is configured, matching `TabM.make`. |
 | `dropout` | `0.1` | Dropout after every backbone activation. |
-| `adapter_std` | `0.5` | Std of the per-member adapter init `N(1, adapter_std)`: members start near the single model and diverge during training (masaMLP's init — the paper's per-layer ±1 sign adapters measured *worse* than a single model here and were rejected). |
+| `adapter_std` | `0.5` | Mini-only std of its legacy input adapter `N(1, adapter_std)`. Full uses the official initialization: chunk-shared first `r` is random ±1 for raw input or `N(0,1)` with a numeric embedding; every later `r` and every `s` starts at one. |
 
-**Sizing notes.** Defaults are the paper's reference configuration
-(Gorishniy et al. 2024, arXiv:2410.24210; the TabM-mini structure). The `k`
-members train as independent predictors on every row — every objective
-(including custom ones) and `sample_weight` work unchanged — and
-predictions are averaged on the probability/value scale. Early stopping
-monitors the ensemble-average metric (per-member stopping is undefined on
-shared weights). `k` is an inner, weight-shared axis and composes with the
-outer seed ensemble `n_ens`. Pairs well with `num_embedding="plr-lite"`
-(the paper's TabM†).
+Full layers initialize shared weights and initially equal member biases from
+`U(-1/sqrt(fan_in), 1/sqrt(fan_in))`; the independent head initializes both
+member weights and biases from the same fan-in bounds. PLE-vB uses the fixed
+`[1, …, 1, fraction-in-current-bin, 0, …, 0]` encoding, a zero-initialized
+per-feature PLE projection, and a linear residual embedding with no
+activation. Thus `model="tabm"`, `model_params={"variant": "full"}` plus
+`num_embedding="ple"` is TabM†; `plr-lite` is a Fourier/periodic embedding
+and is not TabM†.
+
+For a faithful paper-scale run, set the training protocol explicitly:
+
+| Aspect | Paper/official value | masaMLP setting |
+|---|---:|---|
+| Variant / members | full / 32 | `model_params={"variant": "full", "k": 32}` |
+| Width / depth / dropout | 512 / raw 3 or PLE 2 / 0.1 | `d=512`; automatic `n_blocks`; `dropout=0.1` |
+| PLE | quantile PLE-vB, 48 bins, width 16 | `num_embedding="ple"`; `n_bins=48`; `d_num_embedding=16` |
+| Optimizer | AdamW, lr 0.002, wd 0.0003 | `optimizer="adamw"`; `learning_rate=0.002`; `weight_decay=0.0003` |
+| Schedule / stop / clip | none / patience 16 / global 1.0 | `lr_scheduler="none"`; `early_stopping_rounds=16`; `grad_clip=1.0` |
+| Batch protocol | 1024 at this scale; independent members | `batch_size=1024`; `share_training_batches=False` |
+
+Training remains the mean of per-member losses; classification prediction
+is the mean of per-member probabilities, and regression prediction is the
+mean value. Early stopping monitors the one joint ensemble-average metric.
+The inner axis composes with outer `n_ens` in loop or vectorized mode.
 
 ### `realmlp` — RealMLP-TD-S
 
