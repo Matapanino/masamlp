@@ -72,6 +72,64 @@ def test_inner_k_composes_with_n_ens():
     assert pm.shape == (len(X), 6, 3)                          # m = n_ens(2) * k(3)
 
 
+def test_chunked_predict_matches_unchunked_at_k8():
+    """Memory-safe chunked inference (s6e9/ftt findings 2026-09-04: `mp_k=8`
+    OOM'd a TPU v5e-8 chip inside `predict_transformed` because the
+    per-epoch eval set was smaller than the default `eval_batch_size=8192`,
+    so no chunking occurred and the whole eval set folded `*8` into the
+    batch dim in one call). `eval_batch_size` already reaches `predict_proba`
+    / `predict_proba_members` (sklearn.py `_member_predictions`) for every
+    model, `ft_transformer` with `k>1` included -- this locks the numeric
+    parity a small `eval_batch_size` must hold against the default, so the
+    knob stays a pure memory control and never a behavioural one. Training
+    itself never sees `eval_batch_size` (no `eval_set` here), so the two
+    fits share bit-identical weights and this isolates chunking only."""
+    X, y = _toy(n=250, seed=2)
+    common = dict(
+        model="ft_transformer", n_epochs=3, random_state=0, num_embedding="plr-lite",
+        model_params={"k": 8, "d_block": 32, "n_blocks": 1, "attention_n_heads": 4},
+        device="cpu",
+    )
+    unchunked = MasaClassifier(**common, eval_batch_size=8192).fit(X, y)
+    chunked = MasaClassifier(**common, eval_batch_size=17).fit(X, y)  # uneven last chunk
+
+    p_unchunked = unchunked.predict_proba(X)
+    p_chunked = chunked.predict_proba(X)
+    np.testing.assert_allclose(p_unchunked, p_chunked, atol=1e-6, rtol=0)
+
+    pm_unchunked = unchunked.predict_proba_members(X)
+    pm_chunked = chunked.predict_proba_members(X)
+    assert pm_unchunked.shape == pm_chunked.shape == (len(X), 8, 3)
+    np.testing.assert_allclose(pm_unchunked, pm_chunked, atol=1e-6, rtol=0)
+
+
+def test_chunked_per_epoch_eval_matches_unchunked_at_k8():
+    """The s6e9 TPU OOM actually hit the per-epoch held-out eval (early
+    stopping's `Trainer.fit` `for es in eval_sets` loop), not the final
+    predict -- `config.eval_batch_size` already reaches that path too,
+    independently of `predict_proba`'s own chunking (tested above). Training
+    weights at any given epoch are identical regardless of `eval_batch_size`
+    (it never touches the training batches), so the two per-epoch metric
+    histories must match epoch for epoch."""
+    X, y = _toy(n=250, seed=3)
+    Xtr, Xva, ytr, yva = train_test_split(X, y, test_size=0.2, stratify=y, random_state=0)
+    common = dict(
+        model="ft_transformer", n_epochs=5, random_state=1, num_embedding="plr-lite",
+        eval_metric="multi_logloss",
+        model_params={"k": 8, "d_block": 32, "n_blocks": 1, "attention_n_heads": 4},
+        device="cpu",
+    )
+    unchunked = MasaClassifier(**common, eval_batch_size=8192).fit(
+        Xtr, ytr, eval_set=[(Xva, yva)]
+    )
+    chunked = MasaClassifier(**common, eval_batch_size=13).fit(
+        Xtr, ytr, eval_set=[(Xva, yva)]
+    )  # len(Xva)=50 -> chunks of 13,13,13,11: a genuinely uneven last chunk
+    h1 = unchunked.evals_result_["valid_0"]["multi_logloss"]
+    h2 = chunked.evals_result_["valid_0"]["multi_logloss"]
+    np.testing.assert_allclose(h1, h2, atol=1e-6, rtol=0)
+
+
 def test_naive_be_guard_k_not_collapsing():
     """Inner-k must NOT collapse vs k=1 (the naive-BatchEnsemble failure mode,
     ~+0.05 nat monotone worse). Lenient — the real signal is the fold-0 probe."""

@@ -69,7 +69,7 @@ Built-in metrics (string values):
 | `early_stopping_rounds` | `None` | Patience in epochs on the first metric of `valid_0`; restores the best epoch's weights. Requires `eval_set`. |
 | `n_epochs` | `256` | Maximum epochs (early stopping may end training sooner). |
 | `batch_size` | `"auto"` | `"auto"`: full-batch when the training set has ≤ 4096 rows, else minibatches of 1024. `None`: always full-batch. An int is used as-is (capped at the row count). |
-| `eval_batch_size` | `8192` | Forward-pass batch for evaluation and `predict`; a pure memory knob with no effect on results. |
+| `eval_batch_size` | `8192` | Forward-pass batch for evaluation and `predict`; a pure memory knob with no effect on results. Lower it on models whose per-call memory scales with a model-internal axis (e.g. `ft_transformer`'s inner `k`, which folds members into the batch dim — see its sizing notes). |
 | `learning_rate` | `1e-3` | Optimizer learning rate. Models may scale it per parameter group (RealMLP does). |
 | `weight_decay` | `0.0` | Decoupled weight decay (AdamW-style). |
 | `optimizer` | `"adamw"` | `"adamw"`, `"adam"`, or `"sgd"`. |
@@ -92,7 +92,7 @@ Built-in metrics (string values):
 | `cat_encoding` | `"embedding"` | `"embedding"` (per-column `nn.Embedding`, index 0 reserved for unknown/missing), `"onehot"` (RealMLP-style: binary → ±1, missing → 0), or `"hybrid"` (one-hot up to 9 categories, embeddings above — RealMLP-TD). |
 | `onehot_max_categories` | `9` | Cardinality threshold for `cat_encoding="hybrid"`: columns with at most this many observed categories are one-hot encoded (and then scaled with the numerics), the rest get embeddings. pytabkit's `max_one_hot_cat_size` counts its reserved missing slot as well, so its 18 corresponds to `17` here. |
 | `num_embedding` | `None` | Numeric-feature embedding: `None` (raw), `"ple"` (quantile-bin PLE-vB from the TabM paper), `"periodic"`, or the Fourier/periodic PLR family `"pl"` / `"plr"` / `"plr-lite"` / `"pbld"` (arXiv:2203.05556 + PBLD per pytabkit). Token models accept the PLR family, but not `"ple"`/`"periodic"`, as their tokenizer. Tune the embedding via the [shared embedding keys](#shared-embedding-keys-inside-model_params). |
-| `num_embedding_cols` | `None` | Input routing: apply `num_embedding` to **these numeric columns only** (a list of column names). Every other numeric column bypasses the embedding and enters the first layer linearly, still under `num_scaling`. `None` embeds all of them. Requires `num_embedding`; not available on token models. |
+| `num_embedding_cols` | `None` | Input routing: apply `num_embedding` to **these numeric columns only** (a list of column names). Every other numeric column bypasses the embedding and enters the first layer linearly, still under `num_scaling`. `None` embeds all of them. Requires `num_embedding`. On `ft_transformer` (0.9.4) the unlisted columns become plain linear tokens instead — every numeric column still gets exactly one token — since there is no flat first layer to bypass into; still rejected on `tab_transformer`, whose numerics never become tokens at all. |
 | `linear_skip_cols` | `None` | Input routing: add a linear map from these (scaled) numeric columns straight onto the output — `raw = trunk(x) + x_skip @ W_skip + b_skip`. `W_skip`/`b_skip` are zero-initialized, so the fit starts exactly where it would without the skip, and they train in their own param group with **zero weight decay**. `model="realmlp"` only. |
 | `linear_skip_lr_factor` | `1.0` | Learning-rate factor for the `linear_skip_cols` parameters. `0.0` freezes them at zero (an exact no-op control). |
 
@@ -109,6 +109,14 @@ directly instead via `num_embedding_idx` / `linear_skip_idx` in
 `model_params`. Typical use: a target-encoded log-odds column is a monotone
 score whose linear use is the point, while a raw measurement benefits from
 the periodic embedding's flexible 1-D response.
+
+`ft_transformer`'s tokenizer accepts `num_embedding_idx` on the same terms —
+listed columns keep going through `num_embedding` as PLR tokens, the rest
+become linear tokens (`x_j * w_j + b_j`, the FT-Transformer paper's own
+numeric tokenizer) — so every numeric column still becomes exactly one
+token, just via a different tokenizer. `tab_transformer` still rejects it:
+its numerics bypass the transformer as a flat vector and never become
+tokens, so there is nothing to route between.
 
 ### Ensembling
 
@@ -175,7 +183,7 @@ Accepted in `model_params` for **every** model; they configure the
 | `sigma` | `0.1` | Scale of the initial frequencies (`c ~ N(0, sigma²)`); the most sensitive periodic-embedding knob in arXiv:2203.05556. |
 | `cat_emb_dim` | `None` | Per-column categorical embedding dim; `None` = auto (`min(32, max(2, round(1.6 · cardinality^0.56)))`). Token models ignore it (tokens are `d_token`/`d_block` wide). |
 | `num_scaling` | `False` | Learnable per-feature scale on numeric inputs before embedding (RealMLP's scaling layer, trained at 6× lr there). Defaults to `True` when `model="realmlp"`. |
-| `num_embedding_idx` | `None` | Positional form of the estimator's `num_embedding_cols`: a list of positions in the numeric block the embedding applies to; the rest bypass it. Output layout becomes `[embedded | bypassing | categorical]`, each block in ascending column order. Rejected for token models. |
+| `num_embedding_idx` | `None` | Positional form of the estimator's `num_embedding_cols`: a list of positions in the numeric block the embedding applies to; the rest bypass it. Output layout becomes `[embedded | bypassing | categorical]`, each block in ascending column order. Rejected for `tab_transformer` (numerics never become tokens there); accepted on `ft_transformer` (0.9.4), where the rest become linear tokens instead of bypassing — see [Input routing](#preprocessing-and-numeric-embeddings). |
 
 ## Per-architecture parameters
 
@@ -310,7 +318,16 @@ its presets, so when you deepen the model, widen it too. Compute grows
 quadratically with the number of features (attention over one token per
 feature). Inner ensembling (`k>1`) recommends `k=4–8` here: the members fold
 into the batch dim so the shared attention runs ~k× the compute (unlike the
-MLP-backbone `tabm`, where `k=32` is cheap).
+MLP-backbone `tabm`, where `k=32` is cheap) — and ~k× the *memory* per
+forward call, since every chunk `predict_transformed` runs (per-epoch eval,
+`predict_proba`/`predict_members`) effectively becomes `chunk_size * k` rows
+through attention at once. `eval_batch_size` is the mitigation: it is a
+pure memory knob (identical predictions at any value, tests/test_ftt_inner_k.py
+`test_chunked_predict_matches_unchunked_at_k8` / `test_chunked_per_epoch_eval_matches_unchunked_at_k8`)
+already applied to every prediction path, so lower it when `k` is large and
+the device is memory-constrained (e.g. a TPU v5e-8 chip's 15.75 GB HBM) —
+confirmed as the fix for a `k=8` HBM OOM measured at the default `8192`
+(s6e9/ftt `findings/FINDINGS.md` "TPU smoke", 2026-09-04).
 
 ### `tab_transformer` — TabTransformer
 

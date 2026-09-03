@@ -151,12 +151,10 @@ def build_model(
         embed_kwargs["num_input_chunks"] = private_embed_kwargs["_num_input_chunks"]
     _check_model_params(name, builder, params)
     if getattr(builder, "embedding_kind", "flat") == "tokens":
-        if embed_kwargs.pop("num_embedding_idx", None) is not None:
-            raise ValueError(
-                f"num_embedding_idx (num_embedding_cols) is not supported for the "
-                f"token-based model {name!r}: every feature there becomes a token, so "
-                "there is no linear bypass to route a column to"
-            )
+        # num_embedding_idx (num_embedding_cols): whether a token-based model
+        # can express "route only some numeric columns through num_embedding"
+        # depends on whether it tokenizes numerics at all -- TokenEmbedding
+        # itself raises for models that don't (e.g. tab_transformer).
         config = {
             "n_num": n_num,
             "cat_cardinalities": cat_cardinalities,
