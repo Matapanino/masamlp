@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.9.4 (unreleased)
+
+- **`num_embedding_cols` / `num_embedding_idx` on `ft_transformer`** —
+  token-model input routing: the listed numeric columns still go through
+  `num_embedding` (PLR family) as tokens; every other numeric column becomes
+  a plain linear token (`x_j * w_j + b_j`, the FT-Transformer paper's own
+  numeric tokenizer) instead of the previous hard `ValueError`. Every
+  numeric column still becomes exactly one token either way — no linear
+  bypass, since token models have no flat first layer to bypass into.
+  `None` (the default) is byte-identical to before
+  (`tests/test_transformers.py::test_ft_transformer_num_embedding_idx_none_matches_main_pin`,
+  pinned from `main`); naming every numeric column reproduces the unrouted
+  PLR tokenizer exactly
+  (`test_token_embedding_full_coverage_routing_is_the_unrouted_path`).
+  Composes unchanged with the inner-`k` adapter
+  (`test_ft_transformer_num_embedding_idx_composes_with_inner_k`).
+  `tab_transformer` still rejects the option: its numerics bypass the
+  transformer as a flat vector and never become tokens, so there is nothing
+  to route between (moved to
+  `test_input_routing.py::test_selective_embedding_rejected_for_non_tokenizing_token_model`).
+- **Documentation: `eval_batch_size` is the memory-safe mitigation for large
+  `k` on `ft_transformer`.** No code change — `predict_transformed`'s
+  existing chunking (driven by `eval_batch_size`, default `8192`) already
+  reaches every prediction path (the per-epoch eval used by early stopping,
+  `predict_proba`/`predict_members`, the vectorized-ensemble eval loop, and
+  the multi-GPU sharded predict path) and is a pure memory knob — chunked
+  and unchunked predictions are numerically identical to 1e-6
+  (`tests/test_ftt_inner_k.py::test_chunked_predict_matches_unchunked_at_k8`
+  / `test_chunked_per_epoch_eval_matches_unchunked_at_k8`, plus the XLA:CPU
+  CI smoke in `tests/test_xla.py`). This is confirmed as the fix for the
+  `mp_k=8` TPU v5e-8 HBM OOM measured in s6e9/ftt's TPU smoke
+  (`s6e9/ftt/findings/FINDINGS.md` "TPU smoke", 2026-09-04): the per-epoch
+  eval split (4,800 rows) was smaller than the default `eval_batch_size`
+  (8,192), so no chunking occurred and the whole split folded `×8` into the
+  attention batch dim in one call — lower `eval_batch_size` below the eval
+  split size when `k` is large and the device is memory-constrained. See
+  `docs/parameters.md`'s `ft_transformer` sizing notes.
+
 ## 0.9.3 (2026-09-03)
 
 - **Faithful full TabM** — `model="tabm"` now accepts
