@@ -223,3 +223,64 @@ def test_vectorized_honours_weight_decay_mode(monkeypatch, reg_data):
     decoupled = MasaRegressor(n_ens=2, ens_mode="vectorized",
                               weight_decay_mode="decoupled", **fit).fit(X, y).predict(X_test)
     assert not np.allclose(coupled, decoupled)
+
+
+def test_vectorized_label_smoothing_schedule_scales_and_restores(clf_data):
+    """``label_smoothing_schedule`` scales the objective's epsilon per step in
+    vectorized mode too, and hands the objective back at its original value."""
+    from masamlp.core.objectives import BinaryLogistic
+    from masamlp.core.trainer import _coslog4
+
+    X, y, _, _ = clf_data
+    seen: list[float] = []
+
+    class Recording(BinaryLogistic):
+        def per_sample_loss(self, y_true, raw_pred):
+            seen.append(self.label_smoothing)
+            return super().per_sample_loss(y_true, raw_pred)
+
+    objective = Recording(0.2)
+    MasaClassifier(
+        n_ens=2, ens_mode="vectorized", model="realmlp",
+        model_params={"hidden_sizes": [16]}, objective=objective,
+        n_epochs=3, batch_size=64, device="cpu", random_state=0,
+        label_smoothing_schedule="coslog4",
+    ).fit(X, y)
+    assert seen[0] == pytest.approx(0.2 * _coslog4(0.0))      # first step at t=0
+    assert 0.0 < max(seen) <= 0.2 + 1e-12
+    assert objective.label_smoothing == 0.2                   # restored
+
+    with pytest.raises(ValueError, match="label_smoothing_schedule"):
+        MasaClassifier(
+            n_ens=2, ens_mode="vectorized", model="realmlp",
+            model_params={"hidden_sizes": [8]}, n_epochs=1, device="cpu",
+            label_smoothing_schedule="nope",
+        ).fit(X, y)
+
+
+def test_vectorized_drop_last_drops_the_short_batch(clf_data):
+    """With ``drop_last`` a vectorized epoch runs ``floor(n / batch_size)``
+    steps, exactly as the loop path does."""
+    from masamlp.core.objectives import BinaryLogistic
+
+    X, y, _, _ = clf_data                      # 300 rows
+
+    def steps(drop_last: bool) -> int:
+        count = [0]
+
+        class Counting(BinaryLogistic):
+            def per_sample_loss(self, y_true, raw_pred):
+                count[0] += 1
+                return super().per_sample_loss(y_true, raw_pred)
+
+        MasaClassifier(
+            n_ens=2, ens_mode="vectorized", model="realmlp",
+            model_params={"hidden_sizes": [8]}, objective=Counting(),
+            n_epochs=2, batch_size=125, device="cpu", random_state=0,
+            drop_last=drop_last,
+        ).fit(X, y)
+        return count[0]
+
+    # 125 + 125 + a 50-row tail, 2 epochs, and one loss per member per step.
+    assert steps(False) == 3 * 2 * 2
+    assert steps(True) == 2 * 2 * 2
