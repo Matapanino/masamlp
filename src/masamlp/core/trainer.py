@@ -62,6 +62,9 @@ class TrainerConfig:
     # Drop the final short batch of every epoch (pytabkit's `drop_last=True`),
     # so every optimizer step sees exactly `batch_size` rows.
     drop_last: bool = False
+    # True broadcasts one row batch to all members. False follows the TabM
+    # paper's headline protocol with an independent row permutation per member.
+    share_training_batches: bool = True
     grad_clip: float | None = None
     # Exponential moving average of the model parameters (Polyak averaging).
     # When set (typically ~0.99-0.999), eval / early stopping / the final
@@ -138,7 +141,11 @@ class EarlyStopper:
 
 
 def weighted_loss(
-    objective: BaseObjective, y: Tensor, raw: Tensor, weight: Tensor | None
+    objective: BaseObjective,
+    y: Tensor,
+    raw: Tensor,
+    weight: Tensor | None,
+    member_batches: bool = False,
 ) -> Tensor:
     """The trainer-owned reduction ``(loss * w).sum() / w.sum()``. 3D raw
     ``(n, k, out)`` is a weight-shared inner ensemble's per-member output:
@@ -149,8 +156,12 @@ def weighted_loss(
     if raw.ndim == 3:
         n, k, out_dim = raw.shape
         raw = raw.reshape(n * k, out_dim)
-        y = y.repeat_interleave(k, dim=0)
-        weight = None if weight is None else weight.repeat_interleave(k, dim=0)
+        if member_batches:
+            y = y.reshape(n * k, *y.shape[2:])
+            weight = None if weight is None else weight.reshape(n * k)
+        else:
+            y = y.repeat_interleave(k, dim=0)
+            weight = None if weight is None else weight.repeat_interleave(k, dim=0)
     loss_i = objective.per_sample_loss(y, raw)
     if weight is not None:
         return (loss_i * weight).sum() / weight.sum()
@@ -301,6 +312,40 @@ def _resolve_batch_size(config: TrainerConfig, n_rows: int) -> int:
     raise ValueError(f"Invalid batch_size {bs!r}. Expected 'auto', None, or a positive int")
 
 
+def _make_epoch_batches(
+    *,
+    n_rows: int,
+    batch_size: int,
+    device: torch.device,
+    generator: torch.Generator,
+    drop_last: bool,
+    n_members: int,
+    share_training_batches: bool,
+) -> list[Tensor | None]:
+    """Build one epoch's shared or member-indexed static row batches."""
+    full_batch = batch_size >= n_rows
+    if share_training_batches and full_batch:
+        return [None]
+    if share_training_batches:
+        order = torch.randperm(n_rows, generator=generator)
+    else:
+        order = torch.stack(
+            [torch.randperm(n_rows, generator=generator) for _ in range(n_members)],
+            dim=1,
+        )
+    cpu_chunks = list(order.split(batch_size, dim=0))
+    if drop_last and len(cpu_chunks[-1]) < batch_size:
+        cpu_chunks = cpu_chunks[:-1]
+    if device.type == "xla":
+        # Separate transfers avoid tuple-typed split-view IR on XLA.
+        return [chunk.to(device) for chunk in cpu_chunks]
+    resident = order.to(device)
+    chunks = list(resident.split(batch_size, dim=0))
+    if drop_last and len(chunks[-1]) < batch_size:
+        chunks = chunks[:-1]
+    return chunks
+
+
 class Trainer:
     def fit(
         self,
@@ -405,6 +450,13 @@ class Trainer:
         n = len(train)
         batch_size = _resolve_batch_size(config, n)
         full_batch = batch_size >= n
+        supports_member_batches = getattr(model, "supports_member_batches", False)
+        if not config.share_training_batches and not supports_member_batches:
+            raise ValueError(
+                "share_training_batches=False needs a model with an inner ensemble "
+                "that supports member-indexed inputs"
+            )
+        n_batch_members = int(getattr(model, "k", 1))
         # Permutations are drawn on CPU so runs are reproducible across devices.
         gen = torch.Generator()
         if config.random_state is not None:
@@ -433,7 +485,13 @@ class Trainer:
         def train_step(step_model: nn.Module, batch: TabularData) -> Tensor:
             with torch.autocast(device.type, dtype=amp_dtype, enabled=amp_enabled):
                 raw = step_model(batch.x_num, batch.x_cat)
-                loss = weighted_loss(objective, batch.y, raw.float(), batch.weight)
+                loss = weighted_loss(
+                    objective,
+                    batch.y,
+                    raw.float(),
+                    batch.weight,
+                    member_batches=not config.share_training_batches,
+                )
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             if config.grad_clip is not None:
@@ -463,22 +521,15 @@ class Trainer:
             run_model.train()
             epoch_loss = torch.zeros((), device=device)
             unflushed_steps = 0
-            if full_batch:
-                batches: list[Tensor | None] = [None]
-            elif device.type == "xla":
-                # Move each chunk separately: split() views of one device
-                # tensor carry a tuple-typed XLA IR shape that crashes
-                # torch_xla's index_fill lowering (SIGABRT, measured on TPU
-                # v5e — docs/research/tpu-xla.md §8); per-chunk transfers
-                # give every batch a clean device-data node.
-                batches = [
-                    c.to(device)
-                    for c in torch.randperm(n, generator=gen).split(batch_size)
-                ]
-            else:
-                batches = torch.randperm(n, generator=gen).to(device).split(batch_size)
-            if drop_last and len(batches[-1]) < batch_size:
-                batches = batches[:-1]
+            batches = _make_epoch_batches(
+                n_rows=n,
+                batch_size=batch_size,
+                device=device,
+                generator=gen,
+                drop_last=drop_last,
+                n_members=n_batch_members,
+                share_training_batches=config.share_training_batches,
+            )
             for idx in batches:
                 batch = train if idx is None else train.slice(idx)
                 t = global_step / total_steps

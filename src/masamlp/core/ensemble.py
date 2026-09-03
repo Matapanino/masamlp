@@ -35,6 +35,7 @@ from masamlp.core.trainer import (
     TrainerConfig,
     TrainResult,
     _coslog4,
+    _make_epoch_batches,
     _make_optimizer,
     _resolve_batch_size,
     flat_cos,
@@ -196,6 +197,14 @@ def fit_vectorized(
     n = len(train)
     batch_size = _resolve_batch_size(config, n)
     full_batch = batch_size >= n
+    if not config.share_training_batches and not getattr(
+        base, "supports_member_batches", False
+    ):
+        raise ValueError(
+            "share_training_batches=False needs a model with an inner ensemble "
+            "that supports member-indexed inputs"
+        )
+    inner_k = int(getattr(base, "k", 1))
     gen = torch.Generator()
     if config.random_state is not None:
         gen.manual_seed(config.random_state)
@@ -246,13 +255,15 @@ def fit_vectorized(
     for epoch in range(config.n_epochs):
         base.train()
         epoch_loss = torch.zeros((), device=device)
-        batches = (
-            [None]
-            if full_batch
-            else torch.randperm(n, generator=gen).to(device).split(batch_size)
+        batches = _make_epoch_batches(
+            n_rows=n,
+            batch_size=batch_size,
+            device=device,
+            generator=gen,
+            drop_last=drop_last,
+            n_members=inner_k,
+            share_training_batches=config.share_training_batches,
         )
-        if drop_last and len(batches[-1]) < batch_size:
-            batches = batches[:-1]
         for idx in batches:
             batch = train if idx is None else train.slice(idx)
             t = global_step / total_steps
@@ -276,7 +287,13 @@ def fit_vectorized(
             # weighted_loss also flattens inner-ensemble members (models whose
             # raw[j] is (n, k_inner, out), e.g. tabm) — the two axes compose.
             member_losses = [
-                weighted_loss(objective, batch.y, raw[j].float(), batch.weight)
+                weighted_loss(
+                    objective,
+                    batch.y,
+                    raw[j].float(),
+                    batch.weight,
+                    member_batches=not config.share_training_batches,
+                )
                 for j in range(k)
             ]
             # Sum keeps each member's gradients identical to training alone.

@@ -12,11 +12,11 @@ models (attention over per-feature embeddings) instead set a class attribute
 from the config with their own token width.
 
 Models may instead return per-member outputs ``(n, k, out_dim)`` — dim 1 is
-treated as a weight-shared inner ensemble (ADR 0005): the trainer trains
-every member on each row (losses flatten per member, so ``sample_weight``
-and custom objectives work unchanged) and predictions are averaged
-member-wise on the prediction scale. ``tabm`` and ``realm`` are the
-built-in examples.
+treated as a weight-shared inner ensemble (ADR 0005). The trainer either
+broadcasts each row batch or gathers independently shuffled member rows;
+losses flatten per member, so aligned ``sample_weight`` and custom objectives
+work unchanged. Predictions are averaged member-wise on the prediction
+scale. ``tabm`` and ``realm`` are the built-in examples.
 """
 
 from __future__ import annotations
@@ -30,8 +30,10 @@ from masamlp.models.base import (
     FeatureEmbedding,
     LinearTokens,
     PeriodicEmbedding,
+    PiecewiseLinearEmbedding,
     PLREmbedding,
     TokenEmbedding,
+    compute_quantile_bins,
 )
 from masamlp.models.danet import DANet
 from masamlp.models.ft_transformer import FTTransformer
@@ -63,7 +65,10 @@ _EMBEDDING_KEYS = (
     "cat_emb_dim",
     "num_scaling",
     "num_embedding_idx",
+    "n_bins",
 )
+
+_INTERNAL_EMBEDDING_KEYS = ("_ple_bins", "_num_input_chunks")
 
 # Constructor parameters filled in by build_model, not user-facing knobs.
 _NON_PARAM_KEYS = frozenset({"self", "embedding", "embedding_config", "out_dim", "n_label_classes"})
@@ -134,6 +139,16 @@ def build_model(
     builder = _MODEL_REGISTRY[name]
     params = dict(model_params or {})
     embed_kwargs = {k: params.pop(k) for k in _EMBEDDING_KEYS if k in params}
+    private_embed_kwargs = {
+        k: params.pop(k) for k in _INTERNAL_EMBEDDING_KEYS if k in params
+    }
+    # n_bins controls fitting in sklearn.py. Once fitted, FeatureEmbedding
+    # only needs the serialized boundaries themselves.
+    embed_kwargs.pop("n_bins", None)
+    if "_ple_bins" in private_embed_kwargs:
+        embed_kwargs["ple_bins"] = private_embed_kwargs["_ple_bins"]
+    if "_num_input_chunks" in private_embed_kwargs:
+        embed_kwargs["num_input_chunks"] = private_embed_kwargs["_num_input_chunks"]
     _check_model_params(name, builder, params)
     if getattr(builder, "embedding_kind", "flat") == "tokens":
         if embed_kwargs.pop("num_embedding_idx", None) is not None:
@@ -160,7 +175,9 @@ __all__ = [
     "TokenEmbedding",
     "LinearTokens",
     "PeriodicEmbedding",
+    "PiecewiseLinearEmbedding",
     "PLREmbedding",
+    "compute_quantile_bins",
     "GhostBatchNorm1d",
     "ScalingLayer",
     "sparsemax",

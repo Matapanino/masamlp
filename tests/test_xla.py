@@ -422,3 +422,40 @@ def test_realm_traces_one_static_graph_per_step_xla(clf_data):
     proba = m.predict_proba(X_test)
     assert proba.shape == (len(X_test), 2)
     assert np.all(np.isfinite(proba))
+
+
+def test_full_tabm_ple_independent_batches_trace_static_xla(clf_data):
+    import torch_xla.debug.metrics as met
+
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    n_epochs, batch_size = 6, 100
+    n_steps = n_epochs * (len(X) // batch_size)
+    met.clear_all()
+    model = MasaClassifier(
+        model="tabm",
+        model_params={
+            "variant": "full",
+            "k": 4,
+            "d": 16,
+            "n_blocks": 1,
+            "dropout": 0.0,
+            "n_bins": 8,
+            "d_num_embedding": 4,
+        },
+        num_embedding="ple",
+        share_training_batches=False,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        drop_last=True,
+        device="xla",
+        amp=False,
+        random_state=0,
+    ).fit(X, y)
+    data = met.metric_data("CompileTime")
+    n_compiles = 0 if data is None else data[0]
+    assert n_compiles < n_steps // 2, f"{n_compiles} compilations for {n_steps} steps"
+    proba = model.predict_proba(X_test)
+    assert proba.shape == (len(X_test), 2)
+    assert np.all(np.isfinite(proba))

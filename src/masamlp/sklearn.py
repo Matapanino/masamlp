@@ -122,6 +122,7 @@ class BaseMasaModel(BaseEstimator):
         weight_decay_mode: str = "auto",
         label_smoothing_schedule: str = "none",
         drop_last: bool = False,
+        share_training_batches: bool = True,
         ema_decay: float | None = None,
         candidate_budget: int | None = None,
         device: str = "auto",
@@ -161,6 +162,7 @@ class BaseMasaModel(BaseEstimator):
         self.weight_decay_mode = weight_decay_mode
         self.label_smoothing_schedule = label_smoothing_schedule
         self.drop_last = drop_last
+        self.share_training_batches = share_training_batches
         self.ema_decay = ema_decay
         self.candidate_budget = candidate_budget
         self.device = device
@@ -372,6 +374,24 @@ class BaseMasaModel(BaseEstimator):
             **(self.model_params or {}),
             **self._routing_params(pre),
         }
+        if self.num_embedding == "ple":
+            from masamlp.models.base import compute_quantile_bins
+
+            n_bins = resolved_params.get("n_bins", 48)
+            if not isinstance(n_bins, int) or isinstance(n_bins, bool):
+                raise ValueError(f"model_params['n_bins'] must be an int, got {n_bins!r}")
+            # One-hot categorical blocks are already feature representations;
+            # PLE applies only to the original numeric columns.
+            if "num_embedding_idx" not in resolved_params and pre.onehot_pos_:
+                resolved_params["num_embedding_idx"] = list(
+                    range(len(pre.numeric_idx_))
+                )
+            embedded_idx = resolved_params.get("num_embedding_idx")
+            x_for_bins = x_num if embedded_idx is None else x_num[:, embedded_idx]
+            bins = compute_quantile_bins(torch.from_numpy(x_for_bins), n_bins=n_bins)
+            resolved_params["_ple_bins"] = [edges.tolist() for edges in bins]
+        if self.model == "tabm" and (resolved_params.get("variant", "mini") == "full"):
+            resolved_params["_num_input_chunks"] = pre.numeric_chunk_sizes()
         bias = np.asarray(objective.init_bias(y_enc, weight), dtype=np.float32)
 
         # Ensemble members differ by their seed (init + shuffling; in
@@ -404,7 +424,11 @@ class BaseMasaModel(BaseEstimator):
                 model.data_init(
                     torch.from_numpy(x_num[rows]), torch.from_numpy(x_cat[rows])
                 )
-            if hasattr(model, "output_layer") and bias.shape == (out_dim,):
+            if (
+                hasattr(model, "output_layer")
+                and not getattr(model, "preserve_output_bias_init", False)
+                and bias.shape == (out_dim,)
+            ):
                 with torch.no_grad():
                     model.output_layer.bias.copy_(torch.from_numpy(bias))
             members.append(model)
@@ -453,6 +477,7 @@ class BaseMasaModel(BaseEstimator):
                 weight_decay_mode=self.weight_decay_mode,
                 label_smoothing_schedule=self.label_smoothing_schedule,
                 drop_last=self.drop_last,
+                share_training_batches=self.share_training_batches,
                 grad_clip=self.grad_clip,
                 ema_decay=self.ema_decay,
                 device=self.device if device is None else device,
