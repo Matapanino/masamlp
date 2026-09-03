@@ -186,6 +186,7 @@ class RealMNet(nn.Module):
     #: and it freezes ``ScheduledDropout``'s non-persistent schedule buffer.
     #: The outer ``n_ens`` axis still composes in the default loop mode.
     supports_vectorized = False
+    supports_member_batches = True
 
     def __init__(
         self,
@@ -294,10 +295,21 @@ class RealMNet(nn.Module):
                     module.set_factor(factor)
 
     def forward(self, x_num: Tensor, x_cat: Tensor) -> Tensor:
-        h = self.embedding(x_num, x_cat)             # (n, e)   shared
+        member_batches = x_num.ndim == 3
+        if member_batches:
+            n, k = x_num.shape[:2]
+            if k != self.k or x_cat.ndim != 3 or x_cat.shape[:2] != (n, k):
+                raise ValueError(f"member batches must have leading shape (n, {self.k})")
+            h = self.embedding(x_num.flatten(0, 1), x_cat.flatten(0, 1)).unflatten(
+                0, (n, k)
+            )
+        else:
+            h = self.embedding(x_num, x_cat)         # (n, e)   shared
         if self.front_scale is not None:
             h = self.front_scale(h)                  # (n, e)   shared
-        h = h.unsqueeze(1) * self.first_adapter      # (n, k, e) per member
+        if not member_batches:
+            h = h.unsqueeze(1)
+        h = h * self.first_adapter                    # (n, k, e) per member
         return self.output_layer(self.trunk(h))      # (n, k, out_dim)
 
     @torch.no_grad()

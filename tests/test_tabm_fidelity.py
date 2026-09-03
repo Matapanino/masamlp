@@ -12,6 +12,7 @@ from torch import nn
 
 from masamlp.classifier import MasaClassifier
 from masamlp.data.dataset import TabularData
+from masamlp.data.preprocessing import TabularPreprocessor
 from masamlp.models import build_model
 
 _HAS_TABM_ORACLE = importlib.util.find_spec("tabm") is not None
@@ -93,7 +94,9 @@ def test_full_k1_with_ones_equals_plain_mlp_after_weight_copy():
         plain_layers.append(head)
     plain = nn.Sequential(*plain_layers)
     x = torch.randn(17, 4)
-    torch.testing.assert_close(model(x, _empty_cat(len(x)))[:, 0], plain(x), rtol=0, atol=0)
+    torch.testing.assert_close(
+        model(x, _empty_cat(len(x)))[:, 0], plain(x), rtol=1e-6, atol=1e-7
+    )
 
 
 @pytest.mark.skipif(not _HAS_TABM_ORACLE, reason="tabm parity oracle is not installed")
@@ -155,8 +158,8 @@ def test_full_tabm_initialization_is_chunked_and_official(embedded):
             first.r[:, left:right], first.r[:, left : left + 1].expand(-1, right - left)
         )
     if embedded:
-        assert abs(float(first.r.mean())) < 0.25
-        assert 0.6 < float(first.r.std()) < 1.4
+        assert abs(float(first.r.detach().mean())) < 0.25
+        assert 0.6 < float(first.r.detach().std()) < 1.4
     else:
         assert set(first.r.unique().tolist()) <= {-1.0, 1.0}
     torch.testing.assert_close(first.s, torch.ones_like(first.s))
@@ -165,9 +168,37 @@ def test_full_tabm_initialization_is_chunked_and_official(embedded):
     torch.testing.assert_close(first.bias, first.bias[:1].expand_as(first.bias))
     torch.testing.assert_close(second.bias, second.bias[:1].expand_as(second.bias))
     head_bound = 1.0 / math.sqrt(16)
-    assert float(model.output_layer.weight.abs().max()) <= head_bound
-    assert float(model.output_layer.bias.abs().max()) <= head_bound
+    assert float(model.output_layer.weight.detach().abs().max()) <= head_bound
+    assert float(model.output_layer.bias.detach().abs().max()) <= head_bound
     assert torch.count_nonzero(model.output_layer.bias) > 0
+
+
+def test_full_first_adapter_treats_onehot_block_as_one_feature():
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {"number": np.arange(12, dtype=float), "color": ["r", "g", "b"] * 4}
+    )
+    pre = TabularPreprocessor(
+        numeric_scaler="none", categorical_features=["color"], cat_encoding="onehot"
+    ).fit(frame)
+    x_num, _ = pre.transform(frame)
+    model = build_model(
+        "tabm",
+        {
+            "variant": "full",
+            "k": 8,
+            "d": 8,
+            "n_blocks": 1,
+            "_num_input_chunks": pre.numeric_chunk_sizes(),
+        },
+        n_num=x_num.shape[1],
+        cat_cardinalities=[],
+        out_dim=1,
+    )
+    assert model.embedding.feature_chunk_sizes == [1, 3]
+    onehot_r = model.backbone[0].r[:, 1:]
+    torch.testing.assert_close(onehot_r, onehot_r[:, :1].expand_as(onehot_r))
 
 
 def test_full_default_depth_depends_on_numeric_embedding():

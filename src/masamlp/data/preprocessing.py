@@ -172,6 +172,19 @@ class TabularPreprocessor:
         )
         return n_num, len(self.embed_pos_)
 
+    def numeric_chunk_sizes(self) -> list[int]:
+        """Coordinate widths for each feature represented in ``x_num``.
+
+        Raw numeric features occupy one coordinate each. A one-hot categorical
+        feature occupies its full block (or one coordinate for the binary
+        +/-1 representation), which lets TabM initialize one shared adapter
+        scalar for the whole feature representation.
+        """
+        return [1] * len(self.numeric_idx_) + [
+            1 if len(self.categories_[pos]) == 2 else len(self.categories_[pos])
+            for pos in self.onehot_pos_
+        ]
+
     def _resolve_cat_split(self) -> None:
         """Which categorical columns are one-hot vs embedding-encoded."""
         n_cats = len(self.categories_)

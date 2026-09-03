@@ -10,8 +10,12 @@ from torch import Tensor
 
 @dataclass
 class TabularData:
-    """One split's tensors. ``x_num``/``x_cat`` may have zero columns but are
-    always 2-D; ``y`` is whatever the objective's ``prepare_target`` built."""
+    """One split's tensors.
+
+    Stored splits are 2-D by default. Slicing with member-indexed rows creates
+    static ``(batch, k, features)`` inputs and aligned labels/weights for the
+    independent-inner-ensemble training protocol.
+    """
 
     x_num: Tensor
     x_cat: Tensor
