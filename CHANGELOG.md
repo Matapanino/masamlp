@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.4 (unreleased)
+## 0.9.4 (2026-09-04)
 
 - **`num_embedding_cols` / `num_embedding_idx` on `ft_transformer`** —
   token-model input routing: the listed numeric columns still go through
