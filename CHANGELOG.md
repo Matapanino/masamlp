@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.3 (unreleased)
+## 0.9.3 (2026-09-03)
 
 - **Faithful full TabM** — `model="tabm"` now accepts
   `model_params={"variant": "mini" | "full"}`. Mini preserves the 0.9.2
