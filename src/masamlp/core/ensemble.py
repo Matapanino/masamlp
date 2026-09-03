@@ -148,7 +148,8 @@ def fit_vectorized(
         for (lf, wf), ps in group_map.items()
     ]
     optimizer = _make_optimizer(
-        config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas
+        config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas,
+        config.weight_decay_mode,
     )
     scheduler = None
     per_step_schedule = None

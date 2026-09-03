@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 
 from masamlp.classifier import MasaClassifier
 from masamlp.regressor import MasaRegressor
@@ -183,3 +184,42 @@ def test_vectorized_dropout_schedule_follows_the_loop(reg_data):
     expected = 1.0 - p * flat_cos((n_epochs - 1) / n_epochs)
     assert loop == pytest.approx([expected] * 2)
     assert vectorized == pytest.approx(loop)
+
+
+def test_vectorized_honours_weight_decay_mode(monkeypatch, reg_data):
+    """``weight_decay_mode`` picks the optimizer class that implements the
+    decay convention (AdamW decouples, Adam couples). The vectorized path must
+    build the same one the loop path builds — and must actually train with it."""
+    import masamlp.core.ensemble as ens_mod
+    import masamlp.core.trainer as trainer_mod
+
+    X, y, X_test, _ = reg_data
+    base = dict(_KW, n_epochs=1, weight_decay=0.1)
+
+    def spy(module) -> list[type]:
+        seen: list[type] = []
+        real = module._make_optimizer
+
+        def wrapper(*args, **kwargs):
+            optimizer = real(*args, **kwargs)
+            seen.append(type(optimizer))
+            return optimizer
+
+        monkeypatch.setattr(module, "_make_optimizer", wrapper)
+        return seen
+
+    loop_seen, vectorized_seen = spy(trainer_mod), spy(ens_mod)
+    for optimizer, mode in [("adam", "auto"), ("adamw", "coupled")]:
+        kw = dict(base, optimizer=optimizer, weight_decay_mode=mode)
+        MasaRegressor(n_ens=1, ens_mode="loop", **kw).fit(X, y)
+        MasaRegressor(n_ens=2, ens_mode="vectorized", **kw).fit(X, y)
+    assert vectorized_seen == loop_seen == [torch.optim.Adam, torch.optim.Adam]
+
+    # ... and the choice reaches the weights: coupling the decay into the
+    # gradient is not the same update as decoupling it.
+    fit = dict(_KW, n_epochs=8, weight_decay=0.5, learning_rate=0.01, optimizer="adam")
+    coupled = MasaRegressor(n_ens=2, ens_mode="vectorized",
+                            weight_decay_mode="auto", **fit).fit(X, y).predict(X_test)
+    decoupled = MasaRegressor(n_ens=2, ens_mode="vectorized",
+                              weight_decay_mode="decoupled", **fit).fit(X, y).predict(X_test)
+    assert not np.allclose(coupled, decoupled)
