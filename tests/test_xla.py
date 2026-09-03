@@ -253,6 +253,68 @@ def test_input_routing_xla(clf_data):
     assert roc_auc_score(y_test, proba[:, 1]) > 0.85
 
 
+def test_chunked_predict_matches_unchunked_ft_transformer_xla(clf_data):
+    """Memory-safe chunked inference (s6e9/ftt findings 2026-09-04: `mp_k=8`
+    OOM'd a TPU v5e-8 chip inside `predict_transformed` when the eval set
+    was smaller than the default `eval_batch_size=8192`, so no chunking
+    occurred and the whole eval set folded `*8` into the batch dim in one
+    call -- see docs/research/tpu-xla.md 2, "last train/eval batch": a
+    shorter final chunk is "none needed -- a finite 2-shape set, compiled
+    once each"). `eval_batch_size` already reaches `predict_proba` for
+    every model; this checks the numeric parity a small `eval_batch_size`
+    must hold against the default HOLDS ON XLA TOO, compared only against
+    itself (never against CPU -- see test_input_routing_xla's docstring)."""
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    common = dict(
+        model="ft_transformer",
+        model_params={"k": 8, "d_block": 32, "n_blocks": 1, "attention_n_heads": 4},
+        num_embedding="plr-lite",
+        n_epochs=2,
+        device="xla",
+        amp=False,
+        random_state=0,
+    )
+    unchunked = MasaClassifier(**common, eval_batch_size=8192).fit(X, y)
+    chunked = MasaClassifier(**common, eval_batch_size=17).fit(X, y)  # uneven last chunk
+
+    p1 = unchunked.predict_proba(X_test)
+    p2 = chunked.predict_proba(X_test)
+    assert np.all(np.isfinite(p1)) and np.all(np.isfinite(p2))
+    np.testing.assert_allclose(p1, p2, atol=1e-6, rtol=0)
+
+
+def test_num_embedding_idx_routing_ft_transformer_xla(clf_data):
+    """`num_embedding_idx` on ft_transformer (0.9.4) resolves through the
+    same fixed int64 buffer mechanism `test_input_routing_xla` already
+    exercises for FeatureEmbedding -- no data-dependent shapes, so it trains
+    on XLA like any other routed model."""
+    import torch
+
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    m = MasaClassifier(
+        model="ft_transformer",
+        model_params={"n_blocks": 1, "d_block": 32, "attention_n_heads": 4},
+        num_embedding="plr-lite",
+        num_embedding_cols=["0", "2"],
+        n_epochs=3,
+        device="xla",
+        amp=False,
+        random_state=0,
+    ).fit(X, y)
+    embedding = m.model_.embedding
+    assert embedding.num_bypass_tokens is not None
+    buffers = dict(embedding.named_buffers())
+    resident = next(m.model_.parameters()).device
+    for name in ("_emb_idx", "_rest_idx"):
+        assert buffers[name].device == resident
+        assert buffers[name].dtype == torch.int64
+    assert np.all(np.isfinite(m.predict_proba(X_test)))
+
+
 def test_vectorized_rejected_on_xla(reg_data):
     X, y, _, _ = reg_data
     m = _regressor(n_ens=2, ens_mode="vectorized", model="resnet")
