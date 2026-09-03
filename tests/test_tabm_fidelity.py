@@ -53,9 +53,8 @@ def test_mini_predictions_are_byte_identical_to_v092():
         dtype=np.float64,
     )
     y = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1])
-    model = MasaClassifier(
+    common = dict(
         model="tabm",
-        model_params={"k": 4, "d": 8, "n_blocks": 2, "dropout": 0.0},
         numeric_scaler="none",
         categorical_features=None,
         n_epochs=3,
@@ -64,6 +63,19 @@ def test_mini_predictions_are_byte_identical_to_v092():
         device="cpu",
         amp=False,
         random_state=1729,
+    )
+    legacy = MasaClassifier(
+        **common, model_params={"k": 4, "d": 8, "n_blocks": 2, "dropout": 0.0}
+    ).fit(X, y)
+    explicit = MasaClassifier(
+        **common,
+        model_params={
+            "variant": "mini",
+            "k": 4,
+            "d": 8,
+            "n_blocks": 2,
+            "dropout": 0.0,
+        },
     ).fit(X, y)
     probe = np.array(
         [[-1.25, 0.75, 0.25], [0.25, -0.5, 1.25], [2.25, 0.5, -0.75]],
@@ -73,7 +85,8 @@ def test_mini_predictions_are_byte_identical_to_v092():
         bytes.fromhex("88edd83e3c89133fa089cf3e303b183f70b0ce3ec8a7183f"),
         dtype=np.float32,
     ).reshape(3, 2)
-    np.testing.assert_array_equal(model.predict_proba(probe), expected)
+    np.testing.assert_array_equal(legacy.predict_proba(probe), expected)
+    np.testing.assert_array_equal(explicit.predict_proba(probe), expected)
 
 
 def test_full_k1_with_ones_equals_plain_mlp_after_weight_copy():
@@ -115,18 +128,43 @@ def test_full_forward_matches_official_tabm_after_parameter_copy():
         n_blocks=2,
         dropout=0.0,
     )
-    with torch.no_grad():
-        for ours_layer, oracle_block in zip(
-            ours.backbone, oracle.backbone.blocks, strict=True
-        ):
-            oracle_layer = oracle_block[0]
-            oracle_layer.weight.copy_(ours_layer.weight)
-            oracle_layer.r.copy_(ours_layer.r)
-            oracle_layer.s.copy_(ours_layer.s)
-            oracle_layer.bias.copy_(ours_layer.bias)
-        oracle.output.weight.copy_(ours.output_layer.weight.transpose(1, 2))
-        oracle.output.bias.copy_(ours.output_layer.bias)
+
+    def oracle_to_ours():
+        with torch.no_grad():
+            for ours_layer, oracle_block in zip(
+                ours.backbone, oracle.backbone.blocks, strict=True
+            ):
+                oracle_layer = oracle_block[0]
+                ours_layer.weight.copy_(oracle_layer.weight)
+                ours_layer.r.copy_(oracle_layer.r)
+                ours_layer.s.copy_(oracle_layer.s)
+                ours_layer.bias.copy_(oracle_layer.bias)
+            ours.output_layer.weight.copy_(oracle.output.weight.transpose(1, 2))
+            ours.output_layer.bias.copy_(oracle.output.bias)
+
+    def ours_to_oracle():
+        with torch.no_grad():
+            for ours_layer, oracle_block in zip(
+                ours.backbone, oracle.backbone.blocks, strict=True
+            ):
+                oracle_layer = oracle_block[0]
+                oracle_layer.weight.copy_(ours_layer.weight)
+                oracle_layer.r.copy_(ours_layer.r)
+                oracle_layer.s.copy_(ours_layer.s)
+                oracle_layer.bias.copy_(ours_layer.bias)
+            oracle.output.weight.copy_(ours.output_layer.weight.transpose(1, 2))
+            oracle.output.bias.copy_(ours.output_layer.bias)
+
     x = torch.randn(19, 4)
+    oracle_to_ours()
+    torch.testing.assert_close(
+        ours(x, _empty_cat(len(x))), oracle(x_num=x), rtol=1e-6, atol=1e-7
+    )
+    with torch.no_grad():
+        ours.backbone[0].weight.add_(0.125)
+        ours.backbone[1].bias.sub_(0.25)
+        ours.output_layer.weight.mul_(0.75)
+    ours_to_oracle()
     expected = oracle(x_num=x)
     actual = ours(x, _empty_cat(len(x)))
     torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-7)
@@ -311,9 +349,11 @@ def test_independent_member_batches_are_aligned_and_static():
         x_num=row_id[:, None],
         x_cat=torch.zeros(24, 0, dtype=torch.long),
         y=2.0 * row_id + 1.0,
+        weight=3.0 * row_id + 2.0,
     )
     gathered = data.slice(batches[0])
     torch.testing.assert_close(gathered.y, 2.0 * gathered.x_num[..., 0] + 1.0)
+    torch.testing.assert_close(gathered.weight, 3.0 * gathered.x_num[..., 0] + 2.0)
 
 
 def test_independent_member_batches_train_and_reduce_loss():
