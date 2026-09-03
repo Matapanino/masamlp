@@ -368,3 +368,57 @@ def test_eval_sync_chunks_do_not_change_results_xla(clf_data):
     m.model_.invalidate_eval_cache()
     p_fused = m.predict_proba(X_test)
     np.testing.assert_allclose(p_fused, p_step, atol=1e-6)
+
+
+def test_realm_traces_one_static_graph_per_step_xla(clf_data):
+    """RealM's member axis is a fixed ``k`` in the module — no ``vmap``, no
+    Python loop over members — so every training step traces the *same*
+    program. Pin that where it matters: the number of XLA compilations must
+    stay flat while the number of steps grows, and the member-shaped tensors
+    must live on the device with static shapes.
+
+    The batch size divides the training split exactly, so there is only one
+    batch shape; ``ScheduledDropout``'s probability is a tensor buffer, so
+    its per-step update is an operand and not a new constant.
+    """
+    import torch
+    import torch_xla.debug.metrics as met
+
+    from masamlp.classifier import MasaClassifier
+
+    X, y, X_test, _ = clf_data
+    n_epochs, batch_size = 10, 100        # 300 rows -> 3 identical batches
+    n_steps = n_epochs * (len(X) // batch_size)
+
+    met.clear_all()
+    m = MasaClassifier(
+        model="realm",
+        model_params={
+            "hidden_sizes": [16, 16], "k": 4,
+            "dropout": 0.1, "dropout_schedule": "flat_cos",
+        },
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        device="xla",
+        amp=False,
+        random_state=0,
+    ).fit(X, y)
+
+    data = met.metric_data("CompileTime")
+    n_compiles = 0 if data is None else data[0]
+    # A handful of distinct programs (train step, eval chunk, the odd
+    # transfer) against 30 steps: recompiling per step would land near n_steps.
+    assert n_compiles < n_steps // 2, f"{n_compiles} compilations for {n_steps} steps"
+
+    model = m.model_
+    resident = next(model.parameters()).device
+    assert model.first_adapter.shape == (4, model.embedding.d_out)
+    assert model.output_layer.weight.shape == (4, 16, 1)
+    for param in (model.first_adapter, model.trunk[0].r, model.trunk[0].s):
+        assert param.device == resident
+    assert model.trunk[0].weight.dim() == 2      # the shared W is not stacked
+    assert torch.isfinite(model.first_adapter).all()
+
+    proba = m.predict_proba(X_test)
+    assert proba.shape == (len(X_test), 2)
+    assert np.all(np.isfinite(proba))

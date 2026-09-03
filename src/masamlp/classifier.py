@@ -172,7 +172,7 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
         return "logloss" if len(self.classes_) == 2 else "multi_logloss"
 
     def _model_param_defaults(self) -> dict[str, Any]:
-        if self.model == "realmlp":
+        if self.model in ("realmlp", "realm"):
             # RealMLP-TD-S uses SELU for classification.
             return {"num_scaling": True, "activation": "selu"}
         if self.model in ("tabr", "modernnca"):

@@ -50,6 +50,15 @@ def check_vectorizable(model: nn.Module, model_name: str | None = None) -> None:
         raise ValueError(
             f"retrieval models{where} cannot train vectorized; use ens_mode='loop'"
         )
+    if not getattr(model, "supports_vectorized", True):
+        # An architecture that already vectorizes an inner ensemble opts out:
+        # stacking whole models on top of it is the wrong axis (k * n_ens
+        # member-forwards in one vmap) and the stacked non-persistent buffers
+        # freeze its per-step schedules.
+        raise ValueError(
+            f"model{where} opts out of ens_mode='vectorized' (it vectorizes its own "
+            "inner ensemble); use ens_mode='loop'"
+        )
     for module in model.modules():
         if isinstance(module, _BatchNorm):
             raise ValueError(

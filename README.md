@@ -54,6 +54,7 @@ builds on.
 | `resnet` | Gorishniy et al. 2021 (arXiv:2106.11959) | default; strong baseline |
 | `tabm` | Gorishniy et al. 2024 (arXiv:2410.24210) | parameter-efficient deep ensemble: `k` members share one MLP backbone (TabM-mini) and predictions are averaged — works with every objective, `sample_weight`, and custom losses |
 | `realmlp` | Holzmüller et al. 2024 (arXiv:2407.04491) | RealMLP-TD-S architecture (scaling layer, NTP linear layers, SELU/Mish); pair with `masamlp.realmlp_params(task)` for the full training recipe |
+| `realm` | Holzmüller et al. 2024 + Gorishniy et al. 2024 | **RealMLP backbone under TabM-style full BatchEnsemble** (new in 0.9.2): `k` members share one weight matrix per layer and differ through rank-1 `r`/`s` adapters, per-member biases and per-member heads — diversity is *learned jointly* instead of bought with k independent fits. `k`, `member_init`, `adapter_lr_factor`; preset `masamlp.realm_td_params(task, k=...)`. See [docs/realm.md](docs/realm.md) |
 | `ft_transformer` | Gorishniy et al. 2021 (arXiv:2106.11959) | feature tokens + [CLS] + PreNorm/ReGLU transformer, per the rtdl reference |
 | `tab_transformer` | Huang et al. 2020 (arXiv:2012.06678) | transformer over categorical tokens; numerics bypass (or embed via `num_embedding`) |
 | `danet` | Chen et al. AAAI 2022 (arXiv:2112.02962) | Abstract Layers with learnable sparse feature groups (in-house entmax15) |
@@ -134,10 +135,12 @@ The tricks from the RealMLP paper are estimator-level options usable with
   value scale; works with every model including the retrieval ones.
   `ens_mode="vectorized"` trains all members in one vmapped forward/backward
   (`torch.func`) for BatchNorm-free models — pytabkit's speed trick
-- inner ensembling — `tabm` (always) and `ft_transformer` (`k>1`, new in
-  0.8.0) run `k` weight-shared members inside one model (TabM-mini),
-  composing with the outer `n_ens`; the `n_ens·k` members are exposed by
-  `predict_members` / `predict_proba_members`
+- inner ensembling — `tabm` (always), `realm` (always, new in 0.9.2) and
+  `ft_transformer` (`k>1`, new in 0.8.0) run `k` weight-shared members inside
+  one model, composing with the outer `n_ens`; the `n_ens·k` members are
+  exposed by `predict_members` / `predict_proba_members`. `tabm` and
+  `ft_transformer` use the TabM-**mini** adapter; `realm` uses **full
+  BatchEnsemble** over the RealMLP trunk
 - `weight_decay_schedule="flat_cos"` — RealMLP-TD's scheduled weight decay
   (param groups can opt out, e.g. biases)
 - `ema_decay=0.999` — exponential moving average (Polyak averaging) of the
@@ -150,6 +153,9 @@ The tricks from the RealMLP paper are estimator-level options usable with
   parametric activations, flat_cos-scheduled dropout and weight decay, PBLD
   embeddings with their own lr factor, and hybrid categorical encoding
   (one-hot ≤ 9 categories, embeddings above)
+- `masamlp.realm_td_params(task, k=8)` — the same recipe on the `realm`
+  architecture: identical training knobs, `k` BatchEnsemble members instead
+  of one model
 
 ```python
 from masamlp import MasaClassifier, realmlp_params

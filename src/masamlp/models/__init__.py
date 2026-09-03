@@ -15,7 +15,8 @@ Models may instead return per-member outputs ``(n, k, out_dim)`` — dim 1 is
 treated as a weight-shared inner ensemble (ADR 0005): the trainer trains
 every member on each row (losses flatten per member, so ``sample_weight``
 and custom objectives work unchanged) and predictions are averaged
-member-wise on the prediction scale. ``tabm`` is the built-in example.
+member-wise on the prediction scale. ``tabm`` and ``realm`` are the
+built-in examples.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from masamlp.models.layers import (
 )
 from masamlp.models.lnn import CfCCell, TabularLNN
 from masamlp.models.modernnca import ModernNCA
+from masamlp.models.realm import BatchEnsembleLinear, EnsembleNTPHead, RealMNet
 from masamlp.models.realmlp import NTPLinear, RealMLPNet
 from masamlp.models.resnet import TabularResNet
 from masamlp.models.tab_transformer import TabTransformer
@@ -81,6 +83,7 @@ register_model("resnet")(TabularResNet)
 register_model("danet")(DANet)
 register_model("lnn")(TabularLNN)
 register_model("realmlp")(RealMLPNet)
+register_model("realm")(RealMNet)
 register_model("tabr")(TabR)
 register_model("ft_transformer")(FTTransformer)
 register_model("tab_transformer")(TabTransformer)
@@ -168,6 +171,9 @@ __all__ = [
     "CfCCell",
     "RealMLPNet",
     "NTPLinear",
+    "RealMNet",
+    "BatchEnsembleLinear",
+    "EnsembleNTPHead",
     "TabR",
     "FTTransformer",
     "TabTransformer",

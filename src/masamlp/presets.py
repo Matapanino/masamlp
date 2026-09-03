@@ -118,3 +118,37 @@ def realmlp_td_params(task: str = "regression", pytabkit_fidelity: bool = False)
         params["onehot_max_categories"] = 8
         params["drop_last"] = True
     return params
+
+
+def realm_td_params(
+    task: str = "regression", pytabkit_fidelity: bool = False, k: int = 8
+) -> dict[str, Any]:
+    """The RealMLP-TD recipe on the **RealM** architecture: the same backbone
+    and the same training recipe as :func:`realmlp_td_params`, with the
+    single model replaced by a ``k``-member full BatchEnsemble.
+
+    Only the architecture changes — every training knob (coslog4 lr,
+    flat_cos weight decay and dropout, PBLD embeddings, label smoothing,
+    ``pytabkit_fidelity``) is inherited unchanged, because RealM's members
+    train as ordinary predictors on the mean of their per-member losses.
+
+    The three ensembling knobs are spelled out so they are easy to override:
+
+    * ``k`` (default 8) — members. Parameter cost stays near one backbone but
+      compute is ~k member-forwards, and one ``(n, k, d)`` activation grows
+      linearly in ``k``; ``k=32`` is a scale-up confirmation, not a first try.
+    * ``adapter_lr_factor`` (default 1.0) — learning-rate factor for every
+      per-member parameter. The TabM-style tuning space is {1, 2, 4}.
+    * ``member_init`` (default ``"auto"``) — the first adapter's init;
+      ``"auto"`` picks ``"normal"`` here, because the recipe uses PBLD
+      numeric embeddings.
+    """
+    params = realmlp_td_params(task, pytabkit_fidelity=pytabkit_fidelity)
+    params["model"] = "realm"
+    params["model_params"] = {
+        **params["model_params"],
+        "k": k,
+        "adapter_lr_factor": 1.0,
+        "member_init": "auto",
+    }
+    return params

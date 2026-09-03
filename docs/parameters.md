@@ -244,6 +244,33 @@ about its *training recipe* as much as its shape — pair it with
 `masamlp.realmlp_params(task)` or `realmlp_td_params(task)` rather than
 tuning in isolation.
 
+### `realm` — RealM (RealMLP + full BatchEnsemble)
+
+The `realmlp` architecture with `k` weight-shared members, TabM-style. Every
+`realmlp` knob above carries over unchanged (`hidden_sizes`, `activation`,
+`dropout`, `dropout_schedule`, `use_parametric_act`, `act_lr_factor`,
+`plr_lr_factor`, `init_mode`, `zero_init_output`, `scale_position`,
+`scale_lr_factor`, `first_layer_lr_factor`, `bias_lr_factor`) with the same
+meaning; the table below is only the ensembling half. See
+[realm.md](realm.md).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `k` | `8` | Ensemble members. Each layer keeps **one shared weight matrix** and gives every member a rank-1 input adapter `r`, output adapter `s`, its own bias and its own output head, so parameter cost stays near one backbone — but **compute is ~k member-forwards** and one `(n, k, d)` activation grows linearly in `k`. `k=1` is RealMLP plus an (unused) rank-1 reparametrization. Start at 8/16; `k=32` is a scale-up confirmation. |
+| `member_init` | `"auto"` | Init of the **first** adapter — the one that turns the shared embedding into k different member representations. `"auto"` follows TabM's reference rule: `"normal"` (`N(1, adapter_std)`) when a numeric embedding is configured, `"signs"` (random ±1) when the numeric features enter raw. `"ones"` is the degenerate parity mode — every member starts *and stays* identical — kept as a control and for the k=1 equivalence test. |
+| `adapter_std` | `0.5` | Std of the `"normal"` first-adapter init `N(1, adapter_std)` (masaMLP's `tabm` convention). |
+| `adapter_lr_factor` | `1.0` | Learning-rate factor for every **per-member** parameter: the first adapter, each layer's `r`/`s`, and the head weight. The per-member biases keep RealMLP's `bias_lr_factor` and zero weight decay, with this factor applied on top — so at `1.0` every group's effective (lr, wd) factor equals RealMLP's. TabM's tuning space is {1, 2, 4}. |
+
+**Sizing notes.** RealM's members train as independent predictors on the
+**mean of their per-member losses** (never the loss of the mean prediction),
+and the per-epoch metric — hence the single, **joint** best epoch — is
+computed on the member-averaged prediction, which is also what
+`predict_proba` returns. `linear_skip_idx` is *not* implemented here (it
+stays a `realmlp` option), and `ens_mode="vectorized"` is rejected: `realm`
+already vectorizes its inner ensemble, and the outer `n_ens` axis composes
+with it in the default loop mode. Pair with
+`masamlp.realm_td_params(task, k=...)`.
+
 ### `ft_transformer` — FT-Transformer
 
 | Parameter | Default | Meaning |
@@ -384,9 +411,10 @@ cell is shared across steps, `n_steps` adds depth without adding parameters.
 
 ## Presets
 
-`masamlp.realmlp_params(task)` and `masamlp.realmlp_td_params(task)` return
-plain kwargs dicts for the RealMLP-TD-S / RealMLP-TD recipes — spread and
-override them freely:
+`masamlp.realmlp_params(task)`, `masamlp.realmlp_td_params(task)` and
+`masamlp.realm_td_params(task, k=...)` return plain kwargs dicts for the
+RealMLP-TD-S / RealMLP-TD / RealM-TD recipes — spread and override them
+freely:
 
 ```python
 from masamlp import MasaClassifier, realmlp_params

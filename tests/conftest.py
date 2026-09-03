@@ -12,6 +12,7 @@ TINY_PARAMS = {
     "danet": {"n_layers": 2, "base_outdim": 16, "k": 2, "virtual_batch_size": 64},
     "lnn": {"d_hidden": 16, "n_steps": 2, "d_backbone": 32},
     "realmlp": {"hidden_sizes": [32, 32]},
+    "realm": {"hidden_sizes": [32, 32], "k": 4},
     "tabr": {"d_main": 16, "context_size": 8},
     "ft_transformer": {"n_blocks": 1, "d_block": 64, "attention_dropout": 0.1, "ffn_dropout": 0.0},
     "tab_transformer": {"n_layers": 2, "d_token": 16},
@@ -28,6 +29,13 @@ TOKEN_MODELS = ("ft_transformer", "tab_transformer")
 # (RealMLP's NTP layers are built for its high-lr recipe).
 TRAIN_KWARGS = {
     "realmlp": {
+        "learning_rate": 0.05,
+        "optimizer": "adam",
+        "optimizer_betas": (0.9, 0.95),
+        "lr_scheduler": "coslog4",
+    },
+    # RealM is the same backbone, so it wants the same recipe.
+    "realm": {
         "learning_rate": 0.05,
         "optimizer": "adam",
         "optimizer_betas": (0.9, 0.95),

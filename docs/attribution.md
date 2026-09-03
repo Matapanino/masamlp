@@ -27,7 +27,10 @@ stopping on any metric), not the model designs.
   (shared backbone, per-member embedding adapter and output heads). The
   adapter initialization `N(1, adapter_std)` is masaMLP's own — the paper's
   per-layer sign adapters measured worse than a single model here. Official
-  repository: yandex-research/tabm (MIT).
+  repository: yandex-research/tabm (MIT). The `realm` model implements the
+  paper's **full** BatchEnsemble variant instead (per-layer `r`/`s` adapters,
+  per-member biases and heads) over the RealMLP trunk below; the combination
+  is masaMLP's, not either paper's.
 - **Numeric embeddings (PLR / periodic)** — Gorishniy, Rubachev, Babenko,
   *On Embeddings for Numerical Features in Tabular Deep Learning*, NeurIPS
   2022 (arXiv:2203.05556). Reference: `rtdl_num_embeddings` (MIT).
