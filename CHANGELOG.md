@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.9.2 (unreleased)
+
+- **`model="realm"` — RealM: the RealMLP backbone under TabM-style *full*
+  BatchEnsemble.** `k` members share one weight matrix per layer and differ
+  only through rank-1 adapters (`r` on the input, `s` on the output), a
+  per-member bias and a per-member output head, so diversity is *learned
+  jointly* on a shared feature extractor instead of bought with `n_ens`
+  independent fits. New module `masamlp/models/realm.py`
+  (`BatchEnsembleLinear`, `EnsembleNTPHead`, `RealMNet`), preset
+  `masamlp.realm_td_params(task, k=8)`, docs in
+  [docs/realm.md](docs/realm.md).
+  - Member *i*'s effective weight is `W ⊙ (r_i s_iᵀ)` but is **never
+    materialized**: the forward broadcasts the adapters around one shared
+    matmul. `k` is a fixed config value, every shape is static, and there is
+    no `torch.vmap` and no Python loop over members — one XLA graph per
+    batch shape (`tests/test_xla.py::test_realm_traces_one_static_graph_per_step_xla`).
+  - Ensembling knobs: `k` (default 8), `member_init` (default `"auto"` —
+    TabM's rule: `"normal"` with a numeric embedding, `"signs"` without),
+    `adapter_std` (0.5) and `adapter_lr_factor` (1.0, one optimizer group
+    for every per-member parameter). Every `realmlp` knob carries over
+    unchanged with the same meaning.
+  - Members train on the **mean of the per-member losses** through the
+    existing `(n, k, out)` flatten path (so every objective, `sample_weight`
+    and custom losses work untouched), while the per-epoch metric,
+    `predict_proba` and the **single joint** best epoch are all the member
+    mean on the prediction scale. EMA and the best-epoch snapshot reach every
+    k-shaped tensor with no special casing.
+  - `init_mode="std+he5"` walks the trunk on the members flattened into rows
+    `(n*k, d)` — one shared weight must be fitted against all member
+    representations — and copies the resulting bias to every member.
+  - **`realmlp` is untouched.** At `k=1` with `member_init="ones"` RealM is
+    bit-identical to `realmlp` at init (same draws, same order, `std+he5`
+    included) and, with the adapters frozen, trains bit-identically through
+    the full TD recipe (`tests/test_realm.py`).
+  - Not carried over, deliberately: `linear_skip_idx` stays a `realmlp`
+    option, and `ens_mode="vectorized"` is rejected for `realm` — it already
+    vectorizes its inner ensemble, and stacking whole models on top freezes
+    the scheduled-dropout buffer. The outer `n_ens` axis composes in the
+    default loop mode.
+- Models may now set `supports_vectorized = False` to opt out of
+  `ens_mode="vectorized"` with a message naming the model, instead of
+  silently training something else.
+
 ## 0.9.1 (2026-09-02)
 
 - **Input routing** — two opt-in options on both estimators that say *how*
