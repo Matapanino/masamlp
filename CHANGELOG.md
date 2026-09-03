@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.2 (unreleased)
+## 0.9.2 (2026-09-03)
 
 - **`model="realm"` — RealM: the RealMLP backbone under TabM-style *full*
   BatchEnsemble.** `k` members share one weight matrix per layer and differ
