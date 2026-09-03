@@ -189,11 +189,14 @@ def test_selective_embedding_index_validation():
         FeatureEmbedding(4, [], num_embedding="plr", num_embedding_idx=[])
 
 
-def test_selective_embedding_rejected_for_token_models():
+def test_selective_embedding_rejected_for_non_tokenizing_token_model():
+    """``tab_transformer`` never tokenizes numerics (they bypass into the flat
+    head), so there is no per-column token to route -- unlike ft_transformer
+    (0.9.4), which does (see test_transformers.py)."""
     with pytest.raises(ValueError, match="num_embedding_idx"):
         build_model(
-            "ft_transformer",
-            {"n_blocks": 1, "d_block": 32, "num_embedding_idx": [0]},
+            "tab_transformer",
+            {"n_layers": 1, "d_token": 32, "num_embedding_idx": [0]},
             4, [3], 1, "plr",
         )
 
