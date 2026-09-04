@@ -279,8 +279,7 @@ class _CallableObjective(BaseObjective):
             arr = np.asarray(y)
             if np.issubdtype(arr.dtype, np.floating) and np.any(arr != np.floor(arr)):
                 raise ValueError(
-                    "a custom objective with target_dtype='int64' cannot accept "
-                    "fractional targets"
+                    "a custom objective with target_dtype='int64' cannot accept fractional targets"
                 )
             return torch.from_numpy(np.asarray(arr, dtype=np.int64))
         return super().prepare_target(y)

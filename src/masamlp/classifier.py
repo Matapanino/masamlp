@@ -123,12 +123,9 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
     def _setup_target(self, y: np.ndarray) -> tuple[BaseObjective, np.ndarray]:
         if y.ndim != 1:
             if not np.issubdtype(y.dtype, np.floating):
-                raise ValueError(
-                    f"hard class labels must be a 1-D vector, got shape {y.shape}"
-                )
+                raise ValueError(f"hard class labels must be a 1-D vector, got shape {y.shape}")
             raise ValueError(
-                "multiclass soft targets are not supported; pass a 1-D vector of "
-                "hard class labels"
+                "multiclass soft targets are not supported; pass a 1-D vector of hard class labels"
             )
         is_float = np.issubdtype(y.dtype, np.floating)
         is_soft = is_float and not np.all(y == np.floor(y))
@@ -187,8 +184,7 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
         if getattr(self, "_uses_soft_targets_", False):
             if y.ndim != 1 or not np.all(np.isin(y, (0, 1))):
                 raise ValueError(
-                    "eval_set labels must be hard 0/1 labels when training with "
-                    "soft binary targets"
+                    "eval_set labels must be hard 0/1 labels when training with soft binary targets"
                 )
             return y.astype(np.int64)
         idx = np.searchsorted(self.classes_, y)
@@ -197,9 +193,7 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
             raise ValueError("eval_set contains labels not present in the training data")
         return idx.astype(np.int64)
 
-    def _adjust_weight(
-        self, weight: np.ndarray | None, y_enc: np.ndarray
-    ) -> np.ndarray | None:
+    def _adjust_weight(self, weight: np.ndarray | None, y_enc: np.ndarray) -> np.ndarray | None:
         if self.class_weight is None:
             return weight
         n_classes = len(self.classes_)

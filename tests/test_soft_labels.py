@@ -127,9 +127,11 @@ def test_model_family_rejects_out_of_range_soft_targets(model, binary_data):
 
 def test_soft_target_early_stopping_uses_hard_eval_labels(binary_data):
     X, _, y_soft, X_valid, y_valid = binary_data
-    fitted = _estimator(
-        "realmlp", n_epochs=8, early_stopping_rounds=3
-    ).set_params(eval_metric="auc").fit(X, y_soft, eval_set=[(X_valid, y_valid)])
+    fitted = (
+        _estimator("realmlp", n_epochs=8, early_stopping_rounds=3)
+        .set_params(eval_metric="auc")
+        .fit(X, y_soft, eval_set=[(X_valid, y_valid)])
+    )
 
     history = fitted.evals_result_["valid_0"]["auc"]
     assert fitted.best_iteration_ == int(np.argmax(history))
@@ -158,9 +160,7 @@ def test_two_dimensional_hard_targets_raise_hard_label_shape_error(binary_data):
 
 
 @pytest.mark.parametrize("value", [0.0, 1.0])
-def test_constant_float_boundary_targets_explain_hard_label_interpretation(
-    value, binary_data
-):
+def test_constant_float_boundary_targets_explain_hard_label_interpretation(value, binary_data):
     X, y_hard, _, _, _ = binary_data
     y_constant = np.full(y_hard.shape, value, dtype=np.float32)
 
