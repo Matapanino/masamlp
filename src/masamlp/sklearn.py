@@ -335,6 +335,13 @@ class BaseMasaModel(BaseEstimator):
         weight = as_sample_weight(sample_weight, n_rows)
 
         objective, y_enc = self._setup_target(y_arr)
+        if self.model in ("tabr", "modernnca") and getattr(
+            self, "_uses_soft_targets_", False
+        ):
+            raise ValueError(
+                "soft binary targets are not supported for retrieval models "
+                "(tabr, modernnca)"
+            )
         weight = self._adjust_weight(weight, y_enc)
         out_dim = objective.out_dim(y_enc)
         metrics = self._resolve_metrics()

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from masamlp.classifier import MasaClassifier
 from masamlp.regressor import MasaRegressor
@@ -14,6 +15,44 @@ RETRIEVAL = {
     "tabr": {"d_main": 16, "context_size": 8},
     "modernnca": {"dim": 32, "d_block": 64},
 }
+
+
+@pytest.mark.parametrize("model", sorted(RETRIEVAL))
+@pytest.mark.parametrize("candidate_budget", [None, 20])
+def test_retrieval_classifier_rejects_soft_targets(model, candidate_budget, clf_data):
+    X, y, _, _ = clf_data
+    y_soft = y.astype(np.float32) * 0.8 + 0.1
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "soft binary targets are not supported for retrieval models "
+            r"\(tabr, modernnca\)"
+        ),
+    ):
+        MasaClassifier(
+            model=model,
+            model_params=RETRIEVAL[model],
+            candidate_budget=candidate_budget,
+            n_epochs=1,
+            device="cpu",
+            random_state=0,
+        ).fit(X, y_soft)
+
+
+@pytest.mark.parametrize("model", sorted(RETRIEVAL))
+def test_retrieval_classifier_keeps_hard_candidate_labels(model, clf_data):
+    X, y, _, _ = clf_data
+    fitted = MasaClassifier(
+        model=model,
+        model_params=RETRIEVAL[model],
+        n_epochs=1,
+        device="cpu",
+        random_state=0,
+    ).fit(X, y.astype(np.float32))
+
+    assert fitted.model_.cand_y.dtype == torch.int64
+    np.testing.assert_array_equal(fitted.model_.cand_y.numpy(), y)
 
 
 @pytest.mark.parametrize("model", sorted(RETRIEVAL))
