@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.0 (2026-09-04)
+
+- **Soft binary targets** — `MasaClassifier.fit` accepts a floating 1-D `y`
+  with values in `[0, 1]` and trains the built-in binary objective with
+  BCE-with-logits against the probabilities themselves. Hard `{0, 1}` labels
+  retain the 0.9.4 path byte-for-byte. Multiclass soft targets remain out of
+  scope and raise a direct error.
+- **Validation stays hard** — `eval_set` requires hard labels even when the
+  training target is soft, so AUC/logloss evaluation, best-epoch selection,
+  and early stopping keep their existing semantics.
+- **Exact uniform-weight identity** — any positive constant `sample_weight`
+  vector is canonicalized to the unweighted path. Non-uniform weights retain
+  the normalized `(loss * w).sum() / w.sum()` reduction and stay aligned
+  through minibatches and inner/outer ensembles.
+
 ## 0.9.4 (2026-09-04)
 
 - **`num_embedding_cols` / `num_embedding_idx` on `ft_transformer`** —

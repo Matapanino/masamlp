@@ -19,10 +19,16 @@ from masamlp.sklearn import BaseMasaModel, resolve_custom_objective
 class MasaClassifier(ClassifierMixin, BaseMasaModel):
     """Tabular deep learning classifier (binary and multiclass).
 
+    A 1-D floating target containing fractional values is a soft binary
+    target and must lie in ``[0, 1]``. The built-in binary objective applies
+    BCE-with-logits to those probabilities without label encoding. Validation
+    targets remain hard 0/1 labels for metrics and early stopping.
+
     ``class_weight`` ("balanced" or a ``{label: weight}`` dict) multiplies
     into ``sample_weight``, so both flow through the same weighted-loss
-    reduction. Custom objectives receive integer class labels and raw logits
-    (one column for binary, ``n_classes`` for multiclass).
+    reduction. Custom objectives receive raw logits (one column for binary,
+    ``n_classes`` for multiclass) plus integer hard labels or float32 soft
+    binary targets, respectively.
     """
 
     def __init__(
@@ -115,10 +121,30 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
         self.label_smoothing = label_smoothing
 
     def _setup_target(self, y: np.ndarray) -> tuple[BaseObjective, np.ndarray]:
-        self.classes_, y_enc = np.unique(y, return_inverse=True)
-        n_classes = len(self.classes_)
-        if n_classes < 2:
-            raise ValueError("y must contain at least two classes")
+        if y.ndim != 1:
+            raise ValueError(
+                "multiclass soft targets are not supported; pass a 1-D vector of "
+                "hard class labels"
+            )
+        is_float = np.issubdtype(y.dtype, np.floating)
+        is_soft = is_float and not np.all(y == np.floor(y))
+        self._uses_soft_targets_ = bool(is_soft)
+        if is_soft:
+            if np.any((y < 0.0) | (y > 1.0)):
+                raise ValueError("soft binary targets must contain values in [0, 1]")
+            if self.class_weight is not None:
+                raise ValueError(
+                    "class_weight is not supported with soft binary targets; use "
+                    "sample_weight for per-row weighting"
+                )
+            self.classes_ = np.asarray([0.0, 1.0], dtype=y.dtype)
+            y_enc = y.astype(np.float32, copy=False)
+            n_classes = 2
+        else:
+            self.classes_, y_enc = np.unique(y, return_inverse=True)
+            n_classes = len(self.classes_)
+            if n_classes < 2:
+                raise ValueError("y must contain at least two classes")
 
         spec = self.objective
         if spec is None:
@@ -140,9 +166,21 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
             )
         if isinstance(objective, MulticlassSoftmax) and objective.n_classes is None:
             objective.n_classes = n_classes
-        return objective, y_enc.astype(np.int64)
+        if is_soft and isinstance(objective, MulticlassSoftmax):
+            raise ValueError(
+                "multiclass soft targets are not supported; soft binary targets need "
+                "the binary_logistic objective"
+            )
+        return objective, y_enc if is_soft else y_enc.astype(np.int64)
 
     def _encode_eval_target(self, y: np.ndarray) -> np.ndarray:
+        if getattr(self, "_uses_soft_targets_", False):
+            if y.ndim != 1 or not np.all(np.isin(y, (0, 1))):
+                raise ValueError(
+                    "eval_set labels must be hard 0/1 labels when training with "
+                    "soft binary targets"
+                )
+            return y.astype(np.int64)
         idx = np.searchsorted(self.classes_, y)
         idx = np.clip(idx, 0, len(self.classes_) - 1)
         if not np.array_equal(self.classes_[idx], np.asarray(y)):

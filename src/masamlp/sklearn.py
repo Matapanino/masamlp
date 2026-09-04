@@ -297,13 +297,20 @@ class BaseMasaModel(BaseEstimator):
                 are detected from dtypes (or ``categorical_features``) and
                 embedded; numeric columns are imputed and scaled.
             y: Target vector (regression also accepts an (n, k) matrix).
+                For binary classification, a floating 1-D vector with
+                fractional values is treated as soft probabilities in
+                ``[0, 1]`` and trained without hard label encoding.
             sample_weight: Optional per-row weights. Non-negative and finite;
                 every objective — including customs — sees the weighted
                 reduction ``(loss * w).sum() / w.sum()``. The classifier
-                multiplies these by ``class_weight``. None means uniform.
+                multiplies these by ``class_weight``. None means uniform, and
+                any positive constant vector is canonicalized to the exact
+                unweighted path.
             eval_set: Optional list of ``(X, y)`` pairs evaluated after every
                 epoch as ``valid_0``, ``valid_1``, ... in ``evals_result_``.
-                The first metric on ``valid_0`` drives early stopping.
+                The first metric on ``valid_0`` drives early stopping. With
+                soft binary training targets, validation labels must still be
+                hard 0/1 labels; validation metrics remain unweighted.
 
         With ``n_ens > 1``, members train with seeds ``random_state + i`` and
         each early-stops independently; ``evals_result_``/``best_iteration_``
