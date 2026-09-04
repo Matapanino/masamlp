@@ -54,7 +54,9 @@ training rows. It multiplies each per-row loss and the trainer normalizes by
 the batch's sum of weights. Weights stay aligned through shuffled batches and
 inner/outer ensembles. Any positive constant vector is canonicalized to the
 unweighted path, giving byte-identical seeded fits rather than merely
-scale-equivalent gradients.
+scale-equivalent gradients. A zero weight means that row contributes no
+training loss. If every row in a minibatch has zero weight, that minibatch is
+skipped; the full vector must still contain at least one positive weight.
 
 ### Model and objective
 

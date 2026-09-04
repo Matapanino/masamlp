@@ -48,9 +48,7 @@ from masamlp.utils.random import seed_everything
 def check_vectorizable(model: nn.Module, model_name: str | None = None) -> None:
     where = f" {model_name!r}" if model_name else ""
     if getattr(model, "wants_batch_indices", False) or hasattr(model, "set_candidates"):
-        raise ValueError(
-            f"retrieval models{where} cannot train vectorized; use ens_mode='loop'"
-        )
+        raise ValueError(f"retrieval models{where} cannot train vectorized; use ens_mode='loop'")
     if not getattr(model, "supports_vectorized", True):
         # An architecture that already vectorizes an inner ensemble opts out:
         # stacking whole models on top of it is the wrong axis (k * n_ens
@@ -75,9 +73,7 @@ def _name_factors(model: nn.Module) -> dict[str, tuple[float, float]]:
         for group in model.param_groups():
             for p in group["params"]:
                 by_id[id(p)] = (group.get("lr_factor", 1.0), group.get("wd_factor", 1.0))
-    return {
-        name: by_id.get(id(p), (1.0, 1.0)) for name, p in model.named_parameters()
-    }
+    return {name: by_id.get(id(p), (1.0, 1.0)) for name, p in model.named_parameters()}
 
 
 def fit_vectorized(
@@ -101,15 +97,12 @@ def fit_vectorized(
         # torch.func vmap over XLA lazy tensors is unvalidated; failing loud
         # beats silently falling back to the loop mode the user didn't ask for.
         raise ValueError(
-            "ens_mode='vectorized' is not supported on XLA devices; "
-            "use the default loop mode"
+            "ens_mode='vectorized' is not supported on XLA devices; use the default loop mode"
         )
     if device.type == "cpu":
         set_threads(config.n_threads)
     if resolve_amp(config.amp, device, models[0])[0]:
-        warnings.warn(
-            "AMP is disabled for vectorized ensembles; training in float32", stacklevel=2
-        )
+        warnings.warn("AMP is disabled for vectorized ensembles; training in float32", stacklevel=2)
     if config.amp_predict not in (False, "off"):
         warnings.warn(
             "amp_predict is ignored for vectorized ensembles; predicting in float32",
@@ -148,7 +141,11 @@ def fit_vectorized(
         for (lf, wf), ps in group_map.items()
     ]
     optimizer = _make_optimizer(
-        config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas,
+        config.optimizer,
+        groups,
+        config.learning_rate,
+        config.weight_decay,
+        config.betas,
         config.weight_decay_mode,
     )
     scheduler = None
@@ -197,9 +194,7 @@ def fit_vectorized(
     n = len(train)
     batch_size = _resolve_batch_size(config, n)
     full_batch = batch_size >= n
-    if not config.share_training_batches and not getattr(
-        base, "supports_member_batches", False
-    ):
+    if not config.share_training_batches and not getattr(base, "supports_member_batches", False):
         raise ValueError(
             "share_training_batches=False needs a model with an inner ensemble "
             "that supports member-indexed inputs"
@@ -212,9 +207,7 @@ def fit_vectorized(
     # fewer rows than one batch there is nothing to drop.
     drop_last = bool(config.drop_last) and not full_batch and n >= batch_size
     steps_per_epoch = (
-        1
-        if full_batch
-        else int(n // batch_size if drop_last else np.ceil(n / batch_size))
+        1 if full_batch else int(n // batch_size if drop_last else np.ceil(n / batch_size))
     )
     total_steps = max(1, config.n_epochs * steps_per_epoch)
     global_step = 0
@@ -266,6 +259,10 @@ def fit_vectorized(
         )
         for idx in batches:
             batch = train if idx is None else train.slice(idx)
+            # Match Trainer.fit: an all-zero-weight minibatch has no training
+            # objective, so skip its optimizer step instead of dividing by 0.
+            if batch.weight is not None and not torch.any(batch.weight > 0):
+                continue
             t = global_step / total_steps
             if per_step_schedule is not None:
                 factor = per_step_schedule(t)
@@ -305,8 +302,7 @@ def fit_vectorized(
 
         if not np.isfinite(float(epoch_loss)):
             raise ValueError(
-                f"Training loss became non-finite at epoch {epoch}; "
-                "try a lower learning_rate"
+                f"Training loss became non-finite at epoch {epoch}; try a lower learning_rate"
             )
         if scheduler is not None:
             scheduler.step()
@@ -314,9 +310,7 @@ def fit_vectorized(
         for es in eval_sets:
             for j, pred in enumerate(predict_members(es.data)):
                 for metric in metrics:
-                    results[j].evals_result[es.name][metric.name].append(
-                        metric(es.y_metric, pred)
-                    )
+                    results[j].evals_result[es.name][metric.name].append(metric(es.y_metric, pred))
 
         if config.verbose > 0 and (epoch % config.verbose == 0 or epoch == config.n_epochs - 1):
             parts = [f"[{epoch}] mean_train_loss: {float(epoch_loss):.5f}"]
@@ -331,8 +325,7 @@ def fit_vectorized(
                 monitor = results[j].evals_result[eval_sets[0].name][metrics[0].name][-1]
                 if stopper.update(monitor, epoch):
                     best_slices[j] = {
-                        name: params[name][j].detach().to("cpu", copy=True)
-                        for name in params
+                        name: params[name][j].detach().to("cpu", copy=True) for name in params
                     }
             if all(stopper.should_stop for stopper in stoppers):
                 break
@@ -360,9 +353,7 @@ def fit_vectorized(
         for j, model in enumerate(models):
             persistent = set(model.state_dict())
             state = {name: params[name][j] for name in params}
-            state.update(
-                {name: buffers[name][j] for name in buffers if name in persistent}
-            )
+            state.update({name: buffers[name][j] for name in buffers if name in persistent})
             model.load_state_dict(state)
             named = dict(model.named_buffers())
             for name, value in buffers.items():

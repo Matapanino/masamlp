@@ -14,6 +14,16 @@
   vector is canonicalized to the unweighted path. Non-uniform weights retain
   the normalized `(loss * w).sum() / w.sum()` reduction and stay aligned
   through minibatches and inner/outer ensembles.
+- **Constant-weight regression bias fix** — canonicalizing constant weights
+  also gives `MasaRegressor` MAE and quantile objectives their unweighted
+  NumPy quantiles for `init_bias` (for `y=[1,2,3,4]`, median `2.5` and the
+  0.9 quantile `3.7`) instead of the weighted step quantiles `2.0` / `4.0`.
+- **Constant-weight compatibility note** — constant `sample_weight` now
+  canonicalizes to unweighted; fits with a constant weight vector differ from
+  0.9.4 at the 1e-4 level on resnet.
+- **Zero-weight minibatches** — a row with weight zero contributes no training
+  loss, and an all-zero-weight minibatch is skipped instead of producing a
+  divide-by-zero loss.
 
 ## 0.9.4 (2026-09-04)
 
