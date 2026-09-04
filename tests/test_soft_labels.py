@@ -10,7 +10,7 @@ import torch
 from torch.nn import functional as F
 
 from masamlp import MasaClassifier
-from masamlp.core.objectives import BinaryLogistic
+from masamlp.core.objectives import BinaryLogistic, make_objective
 from masamlp.core.trainer import weighted_loss
 
 _FAMILY_PARAMS = {
@@ -87,7 +87,9 @@ def test_model_family_fits_soft_binary_targets(model, binary_data):
     fitted = _estimator(model).fit(X, y_soft, sample_weight=weight)
 
     assert isinstance(fitted.objective_, BinaryLogistic)
-    np.testing.assert_array_equal(fitted.classes_, np.array([0.0, 1.0]))
+    np.testing.assert_array_equal(fitted.classes_, np.array([0, 1]))
+    assert np.issubdtype(fitted.classes_.dtype, np.integer)
+    assert np.issubdtype(fitted.predict(X_valid).dtype, np.integer)
     proba = fitted.predict_proba(X_valid)
     assert proba.shape == (len(X_valid), 2)
     assert np.isfinite(proba).all()
@@ -145,6 +147,38 @@ def test_multiclass_soft_targets_raise_clear_error(binary_data):
 
     with pytest.raises(ValueError, match="multiclass soft targets are not supported"):
         _estimator("realmlp").fit(X, distribution)
+
+
+def test_two_dimensional_hard_targets_raise_hard_label_shape_error(binary_data):
+    X, y_hard, _, _, _ = binary_data
+    y_2d = np.column_stack([y_hard, y_hard])
+
+    with pytest.raises(ValueError, match="hard class labels must be a 1-D vector"):
+        _estimator("realmlp").fit(X, y_2d)
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0])
+def test_constant_float_boundary_targets_explain_hard_label_interpretation(
+    value, binary_data
+):
+    X, y_hard, _, _, _ = binary_data
+    y_constant = np.full(y_hard.shape, value, dtype=np.float32)
+
+    with pytest.raises(
+        ValueError,
+        match=r"constant floating targets.*0\.0 or 1\.0.*hard labels",
+    ):
+        _estimator("realmlp").fit(X, y_constant)
+
+
+def test_int64_custom_objective_rejects_fractional_targets():
+    objective = make_objective(
+        lambda y, raw: (raw[:, 0] - y.float()).abs(),
+        target_dtype="int64",
+    )
+
+    with pytest.raises(ValueError, match="target_dtype='int64'.*fractional targets"):
+        objective.prepare_target(np.array([0.1, 0.9], dtype=np.float32))
 
 
 def test_v094_hard_label_fit_fixture_is_byte_identical():

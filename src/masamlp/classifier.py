@@ -122,6 +122,10 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
 
     def _setup_target(self, y: np.ndarray) -> tuple[BaseObjective, np.ndarray]:
         if y.ndim != 1:
+            if not np.issubdtype(y.dtype, np.floating):
+                raise ValueError(
+                    f"hard class labels must be a 1-D vector, got shape {y.shape}"
+                )
             raise ValueError(
                 "multiclass soft targets are not supported; pass a 1-D vector of "
                 "hard class labels"
@@ -137,13 +141,19 @@ class MasaClassifier(ClassifierMixin, BaseMasaModel):
                     "class_weight is not supported with soft binary targets; use "
                     "sample_weight for per-row weighting"
                 )
-            self.classes_ = np.asarray([0.0, 1.0], dtype=y.dtype)
+            self.classes_ = np.asarray([0, 1], dtype=np.int64)
             y_enc = y.astype(np.float32, copy=False)
             n_classes = 2
         else:
             self.classes_, y_enc = np.unique(y, return_inverse=True)
             n_classes = len(self.classes_)
             if n_classes < 2:
+                if is_float and y[0] in (0.0, 1.0):
+                    raise ValueError(
+                        "constant floating targets equal to 0.0 or 1.0 are "
+                        "interpreted as hard labels; hard labels must contain at "
+                        "least two classes"
+                    )
                 raise ValueError("y must contain at least two classes")
 
         spec = self.objective
