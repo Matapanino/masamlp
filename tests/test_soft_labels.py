@@ -1,8 +1,16 @@
-"""Soft binary targets and exact uniform-weight compatibility."""
+"""Soft binary targets and exact same-run compatibility.
+
+The former v0.9.4 local reproducibility fixture produced state SHA-256
+``6e045f6191e0c90dfda8ed7584bcff85288809b12a237403075b8c86d2ea9dd9`` and
+prediction SHA-256
+``f84a8df249b0c285a54e8660799de8c1f2dd15e9183a1b55c2c7aeebb64d68d3`` on
+Apple silicon, macOS 26.5.1, CPython 3.13.14, and torch 2.14.0. Those hashes
+are documentation only: fitted floating-point tensors are not byte-stable
+across platforms, BLAS implementations, or torch versions. The compatibility
+tests below therefore compare equivalent fits made in the same process.
+"""
 
 from __future__ import annotations
-
-import hashlib
 
 import numpy as np
 import pytest
@@ -24,6 +32,7 @@ _FAMILY_PARAMS = {
         "ffn_dropout": 0.0,
         "k": 2,
     },
+    "resnet": {"d": 8, "n_blocks": 1, "dropout1": 0.0, "dropout2": 0.0},
 }
 
 
@@ -179,33 +188,3 @@ def test_int64_custom_objective_rejects_fractional_targets():
 
     with pytest.raises(ValueError, match="target_dtype='int64'.*fractional targets"):
         objective.prepare_target(np.array([0.1, 0.9], dtype=np.float32))
-
-
-def test_v094_hard_label_fit_fixture_is_byte_identical():
-    """Pin the complete model state and predictions produced by 0.9.4."""
-    rng = np.random.default_rng(20260904)
-    X = rng.normal(size=(48, 4)).astype(np.float32)
-    y = (X[:, 0] - 0.4 * X[:, 1] > 0).astype(np.int64)
-    fitted = MasaClassifier(
-        model="resnet",
-        model_params={"d": 8, "n_blocks": 1, "dropout1": 0.0, "dropout2": 0.0},
-        numeric_scaler="none",
-        n_epochs=3,
-        batch_size=None,
-        device="cpu",
-        n_threads=1,
-        random_state=19,
-    ).fit(X, y)
-
-    state_hash = hashlib.sha256()
-    for name, tensor in fitted.model_.state_dict().items():
-        state_hash.update(name.encode())
-        state_hash.update(str(tensor.dtype).encode())
-        state_hash.update(np.asarray(tensor.shape, dtype=np.int64).tobytes())
-        state_hash.update(tensor.detach().cpu().contiguous().numpy().tobytes())
-    pred_hash = hashlib.sha256(fitted.predict_proba(X[:13]).tobytes()).hexdigest()
-
-    assert state_hash.hexdigest() == (
-        "6e045f6191e0c90dfda8ed7584bcff85288809b12a237403075b8c86d2ea9dd9"
-    )
-    assert pred_hash == "f84a8df249b0c285a54e8660799de8c1f2dd15e9183a1b55c2c7aeebb64d68d3"
