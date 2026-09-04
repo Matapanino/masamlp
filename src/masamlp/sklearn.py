@@ -189,9 +189,7 @@ class BaseMasaModel(BaseEstimator):
     def _default_metric_name(self) -> str:
         raise NotImplementedError
 
-    def _adjust_weight(
-        self, weight: np.ndarray | None, y_enc: np.ndarray
-    ) -> np.ndarray | None:
+    def _adjust_weight(self, weight: np.ndarray | None, y_enc: np.ndarray) -> np.ndarray | None:
         return weight
 
     def _inverse_target(self) -> Callable[[np.ndarray], np.ndarray] | None:
@@ -208,9 +206,7 @@ class BaseMasaModel(BaseEstimator):
     # Input routing (see the module docstring)
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _resolve_numeric_cols(
-        cols: Any, pre: TabularPreprocessor, param: str
-    ) -> list[int] | None:
+    def _resolve_numeric_cols(cols: Any, pre: TabularPreprocessor, param: str) -> list[int] | None:
         """Column names -> ascending positions in the model's numeric block.
 
         The block is ``pre.numeric_idx_`` in the input's column order; any
@@ -221,18 +217,14 @@ class BaseMasaModel(BaseEstimator):
         if cols is None:
             return None
         if isinstance(cols, str):
-            raise ValueError(
-                f"{param} must be a list of column names, got the string {cols!r}"
-            )
+            raise ValueError(f"{param} must be a list of column names, got the string {cols!r}")
         names = [str(c) for c in cols]
         if not names:
             raise ValueError(f"{param} must name at least one column, got an empty list")
         duplicates = sorted({n for n in names if names.count(n) > 1})
         if duplicates:
             raise ValueError(f"{param} has duplicate columns: {duplicates}")
-        position = {
-            pre.feature_names_in_[col]: i for i, col in enumerate(pre.numeric_idx_)
-        }
+        position = {pre.feature_names_in_[col]: i for i, col in enumerate(pre.numeric_idx_)}
         categorical = {pre.feature_names_in_[c] for c in pre.categorical_idx_}
         resolved = []
         for name in names:
@@ -256,9 +248,7 @@ class BaseMasaModel(BaseEstimator):
         from masamlp.models import model_accepts
 
         params: dict[str, Any] = {}
-        emb_idx = self._resolve_numeric_cols(
-            self.num_embedding_cols, pre, "num_embedding_cols"
-        )
+        emb_idx = self._resolve_numeric_cols(self.num_embedding_cols, pre, "num_embedding_cols")
         if emb_idx is not None:
             if self.num_embedding is None:
                 raise ValueError(
@@ -267,9 +257,7 @@ class BaseMasaModel(BaseEstimator):
                     "(e.g. num_embedding='pbld')"
                 )
             params["num_embedding_idx"] = emb_idx
-        skip_idx = self._resolve_numeric_cols(
-            self.linear_skip_cols, pre, "linear_skip_cols"
-        )
+        skip_idx = self._resolve_numeric_cols(self.linear_skip_cols, pre, "linear_skip_cols")
         if skip_idx is not None:
             if not model_accepts(self.model, "linear_skip_idx"):
                 raise ValueError(
@@ -297,13 +285,20 @@ class BaseMasaModel(BaseEstimator):
                 are detected from dtypes (or ``categorical_features``) and
                 embedded; numeric columns are imputed and scaled.
             y: Target vector (regression also accepts an (n, k) matrix).
+                For binary classification, a floating 1-D vector with
+                fractional values is treated as soft probabilities in
+                ``[0, 1]`` and trained without hard label encoding.
             sample_weight: Optional per-row weights. Non-negative and finite;
                 every objective — including customs — sees the weighted
                 reduction ``(loss * w).sum() / w.sum()``. The classifier
-                multiplies these by ``class_weight``. None means uniform.
+                multiplies these by ``class_weight``. None means uniform, and
+                any positive constant vector is canonicalized to the exact
+                unweighted path.
             eval_set: Optional list of ``(X, y)`` pairs evaluated after every
                 epoch as ``valid_0``, ``valid_1``, ... in ``evals_result_``.
-                The first metric on ``valid_0`` drives early stopping.
+                The first metric on ``valid_0`` drives early stopping. With
+                soft binary training targets, validation labels must still be
+                hard 0/1 labels; validation metrics remain unweighted.
 
         With ``n_ens > 1``, members train with seeds ``random_state + i`` and
         each early-stops independently; ``evals_result_``/``best_iteration_``
@@ -328,6 +323,10 @@ class BaseMasaModel(BaseEstimator):
         weight = as_sample_weight(sample_weight, n_rows)
 
         objective, y_enc = self._setup_target(y_arr)
+        if self.model in ("tabr", "modernnca") and getattr(self, "_uses_soft_targets_", False):
+            raise ValueError(
+                "soft binary targets are not supported for retrieval models (tabr, modernnca)"
+            )
         weight = self._adjust_weight(weight, y_enc)
         out_dim = objective.out_dim(y_enc)
         metrics = self._resolve_metrics()
@@ -383,9 +382,7 @@ class BaseMasaModel(BaseEstimator):
             # One-hot categorical blocks are already feature representations;
             # PLE applies only to the original numeric columns.
             if "num_embedding_idx" not in resolved_params and pre.onehot_pos_:
-                resolved_params["num_embedding_idx"] = list(
-                    range(len(pre.numeric_idx_))
-                )
+                resolved_params["num_embedding_idx"] = list(range(len(pre.numeric_idx_)))
             embedded_idx = resolved_params.get("num_embedding_idx")
             x_for_bins = x_num if embedded_idx is None else x_num[:, embedded_idx]
             bins = compute_quantile_bins(torch.from_numpy(x_for_bins), n_bins=n_bins)
@@ -418,12 +415,8 @@ class BaseMasaModel(BaseEstimator):
                 # forward pass cheap: it only feeds per-unit std estimates
                 # and the he+5 row draws.
                 take = min(n_rows, DATA_INIT_ROWS)
-                rows = (
-                    torch.randperm(n_rows)[:take].numpy() if take < n_rows else slice(None)
-                )
-                model.data_init(
-                    torch.from_numpy(x_num[rows]), torch.from_numpy(x_cat[rows])
-                )
+                rows = torch.randperm(n_rows)[:take].numpy() if take < n_rows else slice(None)
+                model.data_init(torch.from_numpy(x_num[rows]), torch.from_numpy(x_cat[rows]))
             if (
                 hasattr(model, "output_layer")
                 and not getattr(model, "preserve_output_bias_init", False)
@@ -497,8 +490,13 @@ class BaseMasaModel(BaseEstimator):
             from masamlp.core.ensemble import fit_vectorized
 
             results = fit_vectorized(
-                members, objective, train, eval_sets, metrics,
-                member_config(self.random_state), inverse,
+                members,
+                objective,
+                train,
+                eval_sets,
+                metrics,
+                member_config(self.random_state),
+                inverse,
             )
             result = results[0]
         else:

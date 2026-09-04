@@ -276,7 +276,12 @@ class _CallableObjective(BaseObjective):
 
     def prepare_target(self, y: np.ndarray) -> Tensor:
         if self._target_dtype == "int64":
-            return torch.from_numpy(np.asarray(y, dtype=np.int64))
+            arr = np.asarray(y)
+            if np.issubdtype(arr.dtype, np.floating) and np.any(arr != np.floor(arr)):
+                raise ValueError(
+                    "a custom objective with target_dtype='int64' cannot accept fractional targets"
+                )
+            return torch.from_numpy(np.asarray(arr, dtype=np.int64))
         return super().prepare_target(y)
 
     def per_sample_loss(self, y_true: Tensor, raw_pred: Tensor) -> Tensor:

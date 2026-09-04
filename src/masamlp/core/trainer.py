@@ -250,9 +250,11 @@ def _make_optimizer(
     # writes keeps meaning the same thing in both. "auto" keeps each named
     # optimizer's own convention, which is what pre-0.9.0 did.
     if name in ("adamw", "adam"):
-        mode = ("decoupled" if name == "adamw" else "coupled") if (
-            weight_decay_mode == "auto"
-        ) else weight_decay_mode
+        mode = (
+            ("decoupled" if name == "adamw" else "coupled")
+            if (weight_decay_mode == "auto")
+            else weight_decay_mode
+        )
         cls = torch.optim.AdamW if mode == "decoupled" else torch.optim.Adam
         return cls(groups, lr=lr, weight_decay=weight_decay, betas=betas or (0.9, 0.999))
     if name == "sgd":
@@ -389,24 +391,24 @@ class Trainer:
         )
         params = [p for g in groups for p in g["params"]]
         optimizer = _make_optimizer(
-            config.optimizer, groups, config.learning_rate, config.weight_decay, config.betas,
+            config.optimizer,
+            groups,
+            config.learning_rate,
+            config.weight_decay,
+            config.betas,
             config.weight_decay_mode,
         )
         scheduler = None
         per_step_schedule = None
         if config.lr_scheduler == "cosine":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=config.n_epochs
-            )
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.n_epochs)
         elif config.lr_scheduler == "coslog4":
             # RealMLP's schedule, applied per optimizer step over the whole run.
             per_step_schedule = _coslog4
         elif config.lr_scheduler != "none":
             raise ValueError(f"Unknown lr_scheduler {config.lr_scheduler!r}")
         if config.weight_decay_schedule not in ("none", "flat_cos"):
-            raise ValueError(
-                f"Unknown weight_decay_schedule {config.weight_decay_schedule!r}"
-            )
+            raise ValueError(f"Unknown weight_decay_schedule {config.weight_decay_schedule!r}")
         wd_scheduled = config.weight_decay_schedule == "flat_cos"
         model_has_schedule = hasattr(model, "set_schedule_t")
         # pytabkit's `ls_eps_sched`: the smoothing epsilon is scaled per step
@@ -467,9 +469,7 @@ class Trainer:
         )
         tracking = config.early_stopping_rounds is not None and bool(eval_sets)
         stopper = (
-            EarlyStopper(config.early_stopping_rounds, metrics[0].minimize)
-            if tracking
-            else None
+            EarlyStopper(config.early_stopping_rounds, metrics[0].minimize) if tracking else None
         )
         best_state: dict[str, Tensor] | None = None
 
@@ -478,9 +478,7 @@ class Trainer:
         if ema_decay is not None:
             if not 0.0 < ema_decay < 1.0:
                 raise ValueError(f"ema_decay must be in (0, 1), got {ema_decay!r}")
-            ema_params = {
-                name: p.detach().clone() for name, p in model.named_parameters()
-            }
+            ema_params = {name: p.detach().clone() for name, p in model.named_parameters()}
 
         def train_step(step_model: nn.Module, batch: TabularData) -> Tensor:
             with torch.autocast(device.type, dtype=amp_dtype, enabled=amp_enabled):
@@ -505,9 +503,7 @@ class Trainer:
         # fewer rows than one batch there is nothing to drop.
         drop_last = bool(config.drop_last) and not full_batch and n >= batch_size
         steps_per_epoch = (
-            1
-            if full_batch
-            else int(n // batch_size if drop_last else np.ceil(n / batch_size))
+            1 if full_batch else int(n // batch_size if drop_last else np.ceil(n / batch_size))
         )
         total_steps = max(1, config.n_epochs * steps_per_epoch)
         global_step = 0
@@ -532,6 +528,12 @@ class Trainer:
             )
             for idx in batches:
                 batch = train if idx is None else train.slice(idx)
+                # A zero weight removes a row's training contribution. If an
+                # entire shuffled minibatch has zero weight, there is no
+                # objective to optimize and the normalized reduction would
+                # divide by zero, so skip that optimizer step altogether.
+                if batch.weight is not None and not torch.any(batch.weight > 0):
+                    continue
                 t = global_step / total_steps
                 if per_step_schedule is not None:
                     factor = per_step_schedule(t)
@@ -587,9 +589,7 @@ class Trainer:
 
             # Evaluate (and pick the best checkpoint) on the EMA parameters
             # when enabled, then restore the live weights for the next epoch.
-            saved_params = (
-                _swap_in_params(model, ema_params) if ema_params is not None else None
-            )
+            saved_params = _swap_in_params(model, ema_params) if ema_params is not None else None
 
             for es in eval_sets:
                 pred = predict_transformed(
@@ -602,13 +602,9 @@ class Trainer:
                 if inverse_target is not None:
                     pred = inverse_target(pred)
                 for metric in metrics:
-                    result.evals_result[es.name][metric.name].append(
-                        metric(es.y_metric, pred)
-                    )
+                    result.evals_result[es.name][metric.name].append(metric(es.y_metric, pred))
 
-            if config.verbose > 0 and (
-                epoch % config.verbose == 0 or epoch == config.n_epochs - 1
-            ):
+            if config.verbose > 0 and (epoch % config.verbose == 0 or epoch == config.n_epochs - 1):
                 parts = [f"[{epoch}] train_loss: {epoch_loss_val:.5f}"]
                 for es in eval_sets:
                     for metric in metrics:

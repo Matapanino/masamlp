@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from masamlp.core.objectives import get_objective, make_objective
+from masamlp.regressor import MasaRegressor
 
 
 def test_squared_error_values_and_bias():
@@ -62,8 +63,9 @@ def test_multioutput_squared_error():
     y2 = np.array([[0.0, 0.0], [1.0, 1.0]])
     raw = torch.tensor([[1.0, 1.0], [1.0, 1.0]])
     assert obj.out_dim(y2) == 2
-    assert torch.allclose(obj.per_sample_loss(obj.prepare_target(y2), raw),
-                          torch.tensor([1.0, 0.0]))
+    assert torch.allclose(
+        obj.per_sample_loss(obj.prepare_target(y2), raw), torch.tensor([1.0, 0.0])
+    )
 
 
 def test_custom_objective_shape_check():
@@ -78,3 +80,24 @@ def test_objective_aliases():
     assert get_objective("l1").name == "mae"
     with pytest.raises(ValueError, match="Unknown objective"):
         get_objective("nope")
+
+
+@pytest.mark.parametrize(
+    ("objective", "expected"),
+    [("mae", 2.5), (get_objective("quantile", alpha=0.9), 3.7)],
+)
+def test_regressor_constant_weight_uses_unweighted_init_bias(objective, expected):
+    X = np.arange(8, dtype=np.float32).reshape(4, 2)
+    y = np.array([1.0, 2.0, 3.0, 4.0])
+    fitted = MasaRegressor(
+        model="resnet",
+        model_params={"d": 8, "n_blocks": 1},
+        objective=objective,
+        target_standardize=False,
+        numeric_scaler="none",
+        n_epochs=0,
+        device="cpu",
+        random_state=0,
+    ).fit(X, y, sample_weight=np.full(len(y), 7.0))
+
+    assert fitted.model_.output_layer.bias.detach().item() == pytest.approx(expected)

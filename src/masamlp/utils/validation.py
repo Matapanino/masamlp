@@ -23,6 +23,11 @@ def as_sample_weight(weight: Any, n_rows: int) -> np.ndarray | None:
         raise ValueError("sample_weight must be non-negative")
     if not np.any(w > 0):
         raise ValueError("sample_weight must contain at least one positive weight")
+    # A uniform vector carries no information. Route it through the exact
+    # unweighted reduction so multiplying and dividing by the constant cannot
+    # introduce floating-point drift in otherwise identical seeded fits.
+    if np.all(w == w[0]):
+        return None
     return w
 
 

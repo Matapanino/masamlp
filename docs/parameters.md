@@ -32,6 +32,32 @@ go stale.
 
 Shared by `MasaRegressor` and `MasaClassifier` unless marked otherwise.
 
+### Target and fit-data contract
+
+`MasaClassifier.fit(X, y, sample_weight=None, eval_set=None)` accepts the
+existing 1-D hard-label target for binary or multiclass classification. A
+floating 1-D `y` containing fractional values is instead a **soft binary
+target**: every value must be finite and in `[0, 1]`, `classes_` is `[0, 1]`,
+and the default objective is BCE-with-logits against those probabilities.
+Hard `{0, 1}` targets keep the pre-0.10.0 label-encoding and training path
+byte-for-byte. Multiclass probability matrices are not supported, and
+`class_weight` is not defined for soft targets; use `sample_weight` for
+per-row weighting.
+
+Every `eval_set` remains an unweighted `(X, y)` pair. In particular, a soft
+binary training target still requires **hard 0/1 validation labels**. Thus
+the configured validation metric (`auc`, `logloss`, and so on), best-epoch
+selection, and early stopping have exactly their hard-label semantics.
+
+`sample_weight` is a finite, non-negative 1-D vector aligned with the
+training rows. It multiplies each per-row loss and the trainer normalizes by
+the batch's sum of weights. Weights stay aligned through shuffled batches and
+inner/outer ensembles. Any positive constant vector is canonicalized to the
+unweighted path, giving byte-identical seeded fits rather than merely
+scale-equivalent gradients. A zero weight means that row contributes no
+training loss. If every row in a minibatch has zero weight, that minibatch is
+skipped; the full vector must still contain at least one positive weight.
+
 ### Model and objective
 
 | Parameter | Default | Meaning |
@@ -160,7 +186,7 @@ not bind.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `class_weight` | `None` | `"balanced"` or a `{label: weight}` dict; multiplied into `sample_weight` before the shared weighted reduction, so it composes with custom objectives. |
+| `class_weight` | `None` | `"balanced"` or a `{label: weight}` dict for hard-label classification; multiplied into `sample_weight` before the shared weighted reduction, so it composes with custom objectives. Not supported for soft binary targets. |
 | `label_smoothing` | `0.0` | Label smoothing for the built-in logistic/softmax objectives. |
 
 ### MasaRegressor only
