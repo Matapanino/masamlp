@@ -34,6 +34,7 @@ from masamlp.core.device import (
 )
 from masamlp.core.metrics import BaseMetric
 from masamlp.core.objectives import BaseObjective
+from masamlp.core.training_terms import TrainingTerms
 from masamlp.data.dataset import TabularData
 from masamlp.utils.random import seed_everything
 
@@ -146,13 +147,24 @@ def weighted_loss(
     raw: Tensor,
     weight: Tensor | None,
     member_batches: bool = False,
+    *,
+    terms: TrainingTerms | None = None,
 ) -> Tensor:
-    """The trainer-owned reduction ``(loss * w).sum() / w.sum()``. 3D raw
-    ``(n, k, out)`` is a weight-shared inner ensemble's per-member output:
-    members flatten into rows and ``y``/``weight`` repeat per member, so the
-    objective keeps its per-sample ``(n,)`` contract (customs included) and
-    the result equals the mean over members of the per-member weighted
-    losses."""
+    """Trainer-owned weighted data risk plus optional model training terms.
+
+    WP2, 2026-09-05: independent ``(n, k, out)`` member batches now use
+    ``mean_j(sum_i(w_ij * loss_ij) / sum_i(w_ij))``, correcting the former
+    pooled-denominator implementation. A zero-total member contributes zero
+    to that fixed-k mean (all-zero weights give zero data risk). Shared
+    batches retain their original flattened reduction. Objectives always
+    receive flattened rows, including custom objectives.
+
+    Auxiliary losses follow the same reduction; model regularizers use their
+    own fixed normalizers and are added once. The Trainer skips an entirely
+    zero-weight batch, including regularizers and optimizer/EMA updates.
+    """
+    row_shape = raw.shape[:-1]
+    independent = raw.ndim == 3 and member_batches
     if raw.ndim == 3:
         n, k, out_dim = raw.shape
         raw = raw.reshape(n * k, out_dim)
@@ -163,9 +175,32 @@ def weighted_loss(
             y = y.repeat_interleave(k, dim=0)
             weight = None if weight is None else weight.repeat_interleave(k, dim=0)
     loss_i = objective.per_sample_loss(y, raw)
-    if weight is not None:
-        return (loss_i * weight).sum() / weight.sum()
-    return loss_i.mean()
+    if terms is not None:
+        for term in terms.auxiliary:
+            if term.values.shape != row_shape:
+                raise ValueError(
+                    f"RowTerm shape must be {tuple(row_shape)}, got {tuple(term.values.shape)}"
+                )
+            if term.coefficient != 0:
+                loss_i = loss_i + term.coefficient * term.values.float().reshape(-1)
+    if weight is None:
+        loss = loss_i.mean()
+    elif independent:
+        w = weight.reshape(n, k)
+        totals = w.sum(dim=0)
+        # Tensor-only guard: safe gradients and static XLA graphs even when
+        # different members have zero total weight on successive steps.
+        denominator = torch.where(totals > 0, totals, torch.ones_like(totals))
+        loss = ((loss_i.reshape(n, k) * w).sum(dim=0) / denominator).mean()
+    else:
+        total = weight.sum()
+        denominator = torch.where(total > 0, total, torch.ones_like(total))
+        loss = (loss_i * weight).sum() / denominator
+    if terms is not None:
+        for term in terms.regularizers:
+            if term.coefficient != 0:
+                loss = loss + term.coefficient * term.value.float() / term.normalizer
+    return loss
 
 
 def predict_transformed(
@@ -480,15 +515,21 @@ class Trainer:
                 raise ValueError(f"ema_decay must be in (0, 1), got {ema_decay!r}")
             ema_params = {name: p.detach().clone() for name, p in model.named_parameters()}
 
+        training_terms = getattr(model, "training_terms", None)
+
         def train_step(step_model: nn.Module, batch: TabularData) -> Tensor:
             with torch.autocast(device.type, dtype=amp_dtype, enabled=amp_enabled):
                 raw = step_model(batch.x_num, batch.x_cat)
+                terms = training_terms(batch, raw) if training_terms is not None else None
+                if terms is not None and not isinstance(terms, TrainingTerms):
+                    raise TypeError("model.training_terms must return TrainingTerms or None")
                 loss = weighted_loss(
                     objective,
                     batch.y,
                     raw.float(),
                     batch.weight,
                     member_batches=not config.share_training_batches,
+                    terms=terms,
                 )
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()

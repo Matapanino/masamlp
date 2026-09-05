@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- WP2 (2026-09-05): opt-in model `training_terms(batch, raw)` hook with
+  trainer-weighted per-row auxiliary losses and separately normalized scalar
+  model penalties; zero coefficients preserve the existing training path.
+  Registered term state uses existing checkpoint and save/load handling.
+- Correct independent TabM member weighting to the mean of separately
+  normalized member risks when weight totals differ. Zero-total members
+  contribute zero to the fixed-member mean; all-zero batches remain skipped.
+- Reject training-term models in vectorized outer ensembles; document the
+  research interface, scaling contract, and example in `docs/training-terms.md`.
+
 ## 0.10.0 (2026-09-04)
 
 - **Soft binary targets** — `MasaClassifier.fit` accepts a floating 1-D `y`
