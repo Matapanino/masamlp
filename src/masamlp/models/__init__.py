@@ -26,6 +26,7 @@ from collections.abc import Callable
 
 from torch import nn
 
+from masamlp.models.auxiliary import AuxiliaryOrdinalNet
 from masamlp.models.base import (
     FeatureEmbedding,
     LinearTokens,
@@ -84,6 +85,7 @@ def register_model(name: str) -> Callable[[Callable[..., nn.Module]], Callable[.
     return decorator
 
 
+register_model("auxiliary_ordinal")(AuxiliaryOrdinalNet)
 register_model("resnet")(TabularResNet)
 register_model("danet")(DANet)
 register_model("lnn")(TabularLNN)
@@ -169,6 +171,7 @@ def build_model(
 
 
 __all__ = [
+    "AuxiliaryOrdinalNet",
     "FeatureEmbedding",
     "TokenEmbedding",
     "LinearTokens",

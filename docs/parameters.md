@@ -482,3 +482,43 @@ from masamlp import MasaClassifier, realmlp_params
 
 clf = MasaClassifier(**{**realmlp_params("classification"), "n_epochs": 128})
 ```
+
+## Masked ordinal auxiliary model (`auxiliary_ordinal`, WP4, 2026-09-05)
+
+The primary output is a single binary logit; ordinary `MasaClassifier.predict_proba`
+and directory save/load keep their usual two-column probability contract. Set
+`cat_encoding="embedding"` to keep the auxiliary target carrier categorical.
+All routing indices below address the **preprocessed** arrays, not raw DataFrame
+positions. The caller owns causal provenance and must exclude every target-derived
+feature. Numeric preprocessing and auxiliary-label vocabularies must be fitted
+inside the training boundary.
+
+- `parent_num_idx`, `parent_cat_idx`: explicit allowlists for auxiliary predictors.
+- `excluded_num_idx`, `excluded_cat_idx`: explicit complements; overlaps, duplicate
+  indices, missing declarations and out-of-range indices raise. This prevents
+  an unreviewed new input from silently becoming an auxiliary predictor.
+- `auxiliary_target_cat_idx`: separate categorical target carrier, excluded from
+  **both** prediction branches. The observed response may remain as a separate
+  primary input. At inference supply a missing carrier column; its value is ignored.
+- `auxiliary_class_order`: all nonmissing category codes `1..K` in ordinal order.
+  Resolve against the fitted preprocessor vocabulary. Code 0 is unknown/missing
+  and has zero auxiliary row loss, with the ordinary primary-weight denominator.
+- `auxiliary_weight` (0.1): nonnegative multiplier of the proper cumulative-logit
+  category negative log likelihood. Zero returns empty WP2 terms before auxiliary
+  likelihood computation and reproduces the same architecture without the hook.
+- `latent_dim` (8), `auxiliary_hidden_sizes` ((32, 32)): auxiliary RealMLP dimensions.
+  The deterministic auxiliary branch uses SELU, learnable scaling and a nonzero
+  NTP latent head. The primary binary head reads its latent alongside the primary
+  RealMLP hidden representation; both losses update the shared latent branch.
+- `backbone_params` (None): JSON-compatible RealMLP constructor options for the
+  primary branch, e.g. `hidden_sizes`, dropout, initialization and scheduling.
+  `linear_skip_idx` is currently unsupported and raises. Shared numeric embedding
+  options configure the primary branch; the auxiliary branch embeds only parents.
+
+The ordinal head uses increasing softplus-spaced cutpoints and FP32 stable log
+probabilities. It returns one unreduced row loss via WP2, so sample weighting
+remains the Trainer's responsibility. This is an opt-in research architecture;
+no causal claim or competition gain is implied. Vectorized outer ensembles are
+unsupported under the WP2 hook contract. Auxiliary-only pretraining can use the
+ordinary Trainer with a zero primary objective, then a fresh binary Trainer over
+the same module with `auxiliary_weight=0`; optimizer state is reset between stages.
