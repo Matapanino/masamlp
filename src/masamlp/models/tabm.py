@@ -22,6 +22,20 @@ import math
 
 import torch
 from torch import Tensor, nn
+from torch.nn.utils import parametrize
+
+from masamlp.core.training_terms import RowTerm, TrainingTerms
+
+
+class _GroupMask(nn.Module):
+    """Fixed connectivity of a shared first-layer weight, saved as a buffer."""
+
+    def __init__(self, mask: Tensor) -> None:
+        super().__init__()
+        self.register_buffer("mask", mask)
+
+    def forward(self, weight: Tensor) -> Tensor:
+        return weight * self.mask
 
 
 class EnsembleHead(nn.Module):
@@ -128,12 +142,25 @@ class TabM(nn.Module):
         n_blocks: int | None = None,
         dropout: float = 0.1,
         adapter_std: float = 0.5,
+        first_layer_groups: list[int] | None = None,
+        member_feature_mask: list[list[bool]] | None = None,
+        brier_coefficient: float = 0.0,
     ) -> None:
         super().__init__()
         if variant not in ("mini", "full"):
             raise ValueError(f"variant must be 'mini' or 'full', got {variant!r}")
         if k < 1:
             raise ValueError(f"k must be >= 1, got {k}")
+        if variant != "full" and (first_layer_groups is not None or
+                                  member_feature_mask is not None or brier_coefficient != 0):
+            raise ValueError("structured views and Brier terms require variant='full'")
+        if not math.isfinite(brier_coefficient) or brier_coefficient < 0:
+            raise ValueError("brier_coefficient must be finite and nonnegative")
+        if brier_coefficient and out_dim != 1:
+            raise ValueError("Brier terms require a single binary logit output")
+        self.brier_coefficient = float(brier_coefficient)
+        if self.brier_coefficient:
+            self.training_terms = self._brier_terms
         if n_blocks is None:
             n_blocks = 2 if variant == "full" and embedding.has_num_embedding else 3
         if n_blocks < 1:
@@ -170,6 +197,42 @@ class TabM(nn.Module):
             # than the estimator's optional target-prior bias initialization.
             self.preserve_output_bias_init = True
 
+        # Opt-in restrictions are applied after the ordinary initialization:
+        # omitted options preserve the exact original RNG and state-dict paths.
+        chunks = embedding.feature_chunk_sizes
+        if first_layer_groups is not None:
+            if (len(first_layer_groups) != len(chunks) or
+                    any(type(g) is not int or g < -1 for g in first_layer_groups)):
+                raise ValueError("first_layer_groups needs one integer >= -1 per feature chunk")
+            groups = sorted(set(first_layer_groups) - {-1})
+            if not groups or d < len(groups):
+                raise ValueError("first_layer_groups requires between one and d non-shared groups")
+            columns = torch.tensor([g for g, size in zip(first_layer_groups, chunks, strict=True)
+                                    for _ in range(size)])
+            rows = torch.tensor([groups[j % len(groups)] for j in range(d)])
+            mask = ((rows[:, None] == columns[None, :]) | (columns[None, :] == -1)).float()
+            # Keep fan-in scale comparable to the unrestricted first layer.
+            with torch.no_grad():
+                self.backbone[0].weight.mul_((embedding.d_out / mask.sum(1)).sqrt()[:, None])
+            parametrize.register_parametrization(self.backbone[0], "weight", _GroupMask(mask))
+        if member_feature_mask is not None:
+            if (len(member_feature_mask) != k or
+                    any(len(row) != len(chunks) or not any(row) or
+                        any(type(value) is not bool for value in row)
+                        for row in member_feature_mask)):
+                raise ValueError("member_feature_mask needs k nonempty boolean feature-chunk rows")
+            mask = torch.tensor(member_feature_mask, dtype=torch.float32)
+            self.register_buffer("_member_feature_mask", mask.repeat_interleave(
+                torch.tensor(chunks), dim=1))
+
+    def _brier_terms(self, batch, raw: Tensor) -> TrainingTerms:
+        """Optional binary Brier loss; trainer owns row/member/weight reduction."""
+        target = batch.y
+        if target.ndim == 1:
+            target = target[:, None]
+        values = (raw.squeeze(-1).float().sigmoid() - target.float()).square()
+        return TrainingTerms(auxiliary=(RowTerm(values, self.brier_coefficient),))
+
     def forward(self, x_num: Tensor, x_cat: Tensor) -> Tensor:
         member_batches = x_num.ndim == 3
         if member_batches:
@@ -185,6 +248,8 @@ class TabM(nn.Module):
             x = self.embedding(x_num, x_cat).unsqueeze(1)
         if self.variant == "mini":
             x = x * self.adapter
+        if hasattr(self, "_member_feature_mask"):
+            x = x * self._member_feature_mask
         for layer in self.backbone:
             x = self.dropout(torch.relu(layer(x)))
         return self.output_layer(x)
