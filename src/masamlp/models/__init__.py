@@ -39,6 +39,7 @@ from masamlp.models.danet import DANet
 from masamlp.models.ft_transformer import FTTransformer
 from masamlp.models.gandalf import GandalfNet, GatedFeatureLearningUnit
 from masamlp.models.grn import GatedResidualBlock, GRNNet
+from masamlp.models.hierarchical import HierarchicalRealMLPNet
 from masamlp.models.layers import (
     GhostBatchNorm1d,
     ScalingLayer,
@@ -88,6 +89,7 @@ register_model("resnet")(TabularResNet)
 register_model("danet")(DANet)
 register_model("lnn")(TabularLNN)
 register_model("realmlp")(RealMLPNet)
+register_model("hierarchical_realmlp")(HierarchicalRealMLPNet)
 register_model("realm")(RealMNet)
 register_model("tabr")(TabR)
 register_model("ft_transformer")(FTTransformer)
@@ -185,6 +187,7 @@ __all__ = [
     "TabularLNN",
     "CfCCell",
     "RealMLPNet",
+    "HierarchicalRealMLPNet",
     "NTPLinear",
     "RealMNet",
     "BatchEnsembleLinear",
