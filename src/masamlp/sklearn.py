@@ -277,6 +277,8 @@ class BaseMasaModel(BaseEstimator):
         y: Any,
         sample_weight: Any = None,
         eval_set: list[tuple[Any, Any]] | None = None,
+        *,
+        ple_bins: dict[str, Any] | None = None,
     ) -> BaseMasaModel:
         """Fit on arrays/DataFrames.
 
@@ -299,6 +301,13 @@ class BaseMasaModel(BaseEstimator):
                 The first metric on ``valid_0`` drives early stopping. With
                 soft binary training targets, validation labels must still be
                 hard 0/1 labels; validation metrics remain unweighted.
+            ple_bins: Optional mapping from every embedded numeric column name
+                to finite, strictly increasing bin edges in raw input coordinates.
+                Requires num_embedding="ple". Converted through the train-fitted
+                scaler; collapsed transformed edges are rejected. The caller
+                must fit supervised knots inside the training boundary. None
+                retains quantile fitting. Converted edges persist on save/load;
+                refitting requires supplying this fit-time argument again.
 
         With ``n_ens > 1``, members train with seeds ``random_state + i`` and
         each early-stops independently; ``evals_result_``/``best_iteration_``
@@ -308,6 +317,8 @@ class BaseMasaModel(BaseEstimator):
         ft_transformer/gandalf/lnn); resnet/danet/modernnca keep the default
         ``ens_mode="loop"`` (a clear error is raised before training otherwise).
         """
+        if ple_bins is not None and self.num_embedding != "ple":
+            raise ValueError("ple_bins requires num_embedding='ple'")
         seed_everything(self.random_state)
         y_arr = as_target(y)
 
@@ -385,8 +396,15 @@ class BaseMasaModel(BaseEstimator):
                 resolved_params["num_embedding_idx"] = list(range(len(pre.numeric_idx_)))
             embedded_idx = resolved_params.get("num_embedding_idx")
             x_for_bins = x_num if embedded_idx is None else x_num[:, embedded_idx]
-            bins = compute_quantile_bins(torch.from_numpy(x_for_bins), n_bins=n_bins)
-            resolved_params["_ple_bins"] = [edges.tolist() for edges in bins]
+            # 2026-09-05 WP5: opt-in explicit knots must not be overwritten.
+            if ple_bins is None:
+                bins = compute_quantile_bins(torch.from_numpy(x_for_bins), n_bins=n_bins)
+                resolved_params["_ple_bins"] = [edges.tolist() for edges in bins]
+            else:
+                from masamlp.data.ple import explicit_ple_bins
+
+                indices = list(range(x_num.shape[1])) if embedded_idx is None else embedded_idx
+                resolved_params["_ple_bins"] = explicit_ple_bins(ple_bins, pre, X, indices)
         if self.model == "tabm" and (resolved_params.get("variant", "mini") == "full"):
             resolved_params["_num_input_chunks"] = pre.numeric_chunk_sizes()
         bias = np.asarray(objective.init_bias(y_enc, weight), dtype=np.float32)

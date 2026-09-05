@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- WP3 (2026-09-05): register `hierarchical_realmlp`, adding coarse-to-fine,
+  zero-initialized numeric residual tables to the existing smooth RealMLP
+  embeddings without widening the trunk. Unseen values back off to supported
+  parents. Full-table support-dependent shrinkage uses WP2 training terms,
+  independently of minibatch frequency; tables and support state survive save/load.
+
 - Add opt-in `auxiliary_ordinal`: two RealMLP branches with explicit parent/excluded
   routing, a shared latent and stable ordinal per-row likelihood via WP2. Separate
   auxiliary target carriers support shuffled controls; binary prediction and
@@ -16,6 +22,12 @@
   contribute zero to the fixed-member mean; all-zero batches remain skipped.
 - Reject training-term models in vectorized outer ensembles; document the
   research interface, scaling contract, and example in `docs/training-terms.md`.
+- **Explicit PLE knots (2026-09-05 WP5)** — `fit(..., ple_bins={name: edges})`
+  accepts raw-coordinate edges for every embedded numeric column. Names follow
+  numeric routing through preprocessing, converted edges are validated after
+  scaling/float32 conversion and persist in the existing saved embedding state.
+  Default quantile fitting is unchanged. Supervised knot fitting remains the
+  caller's training-boundary responsibility; refits require the mapping again.
 
 ## 0.10.0 (2026-09-04)
 
