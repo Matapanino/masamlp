@@ -7,8 +7,6 @@
   auxiliary target carriers support shuffled controls; binary prediction and
   save/load remain ordinary. Includes routing, zero-weight, falsifier and persistence tests.
 
-## Unreleased
-
 - WP2 (2026-09-05): opt-in model `training_terms(batch, raw)` hook with
   trainer-weighted per-row auxiliary losses and separately normalized scalar
   model penalties; zero coefficients preserve the existing training path.
