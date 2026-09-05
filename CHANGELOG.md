@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add opt-in `realmlp` `first_layer_groups`: disjoint feature groups restrict the
+  first hidden layer, with active-fan-in scaling and matching data-driven
+  initialization. Dense defaults retain their RNG and predictions. Group masks,
+  weighted training and saved estimator round trips are covered by tests.
 - Add opt-in TabM full first-layer feature groups, fixed member feature views,
   and an auxiliary binary Brier term through the existing weighted training-term
   interface. Defaults preserve original initialization, predictions and state
