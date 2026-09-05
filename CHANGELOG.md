@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in `realmlp` `first_layer_groups`: disjoint feature groups restrict the
+  first hidden layer, with active-fan-in scaling and matching data-driven
+  initialization. Dense defaults retain their RNG and predictions. Group masks,
+  weighted training and saved estimator round trips are covered by tests.
+
 ## 0.11.0 (2026-09-05)
 
 - WP3 (2026-09-05): register `hierarchical_realmlp`, adding coarse-to-fine,
