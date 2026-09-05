@@ -117,6 +117,69 @@ class NTPLinear(nn.Module):
         return pre + self.bias
 
 
+def _first_layer_coordinates(groups: list[list[int]], chunks: list[int]) -> list[list[int]]:
+    """Expand a complete disjoint partition of embedding chunks to coordinates."""
+    message = "first_layer_groups must partition every embedding feature chunk exactly once"
+    if not isinstance(groups, (list, tuple)) or not groups:
+        raise ValueError(message)
+    seen: list[int] = []
+    expanded: list[list[int]] = []
+    offsets = [0]
+    for width in chunks:
+        offsets.append(offsets[-1] + width)
+    for group in groups:
+        if not isinstance(group, (list, tuple)) or not group:
+            raise ValueError(message)
+        coordinates = []
+        for feature in group:
+            if (isinstance(feature, bool) or not isinstance(feature, int)
+                    or feature < 0 or feature >= len(chunks)):
+                raise ValueError(message)
+            seen.append(feature)
+            coordinates.extend(range(offsets[feature], offsets[feature + 1]))
+        expanded.append(coordinates)
+    if sorted(seen) != list(range(len(chunks))):
+        raise ValueError(message)
+    return expanded
+
+
+class GroupedNTPLinear(NTPLinear):
+    """NTP layer with disjoint input groups and group-specific fan-in scaling.
+
+    Hidden units are assigned contiguous, nearly equal blocks in group order.
+    Multiplication by a fixed mask enforces the restriction after every optimizer
+    step, including weight decay. Data-driven initialization uses the same mask.
+    """
+
+    def __init__(self, in_features: int, out_features: int, groups: list[list[int]]) -> None:
+        if len(groups) > out_features:
+            raise ValueError("first_layer_groups needs at least one hidden unit per group")
+        super().__init__(in_features, out_features)
+        mask = torch.zeros(in_features, out_features)
+        scale = torch.empty(out_features)
+        start = 0
+        for i, inputs in enumerate(groups):
+            width = out_features // len(groups) + int(i < out_features % len(groups))
+            mask[inputs, start:start + width] = 1
+            scale[start:start + width] = 1 / math.sqrt(len(inputs))
+            start += width
+        self.register_buffer("group_mask", mask)
+        self.register_buffer("group_scale", scale)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return (x @ (self.weight * self.group_mask)) * self.group_scale + self.bias
+
+    @torch.no_grad()
+    def data_init_(self, x: Tensor) -> Tensor:
+        w = torch.randn_like(self.weight)
+        pre = (x @ (w * self.group_mask)) * self.group_scale
+        std = pre.std(dim=0, correction=0, keepdim=True).clamp_min(1e-30)
+        self.weight.copy_(w / std)
+        pre = pre / std
+        self.bias.copy_(_heplus_bias(pre))
+        return pre + self.bias
+
+
 class ParametricActivation(nn.Module):
     """RealMLP-TD: ``x + (act(x) - x) * alpha`` with per-unit learnable
     ``alpha`` (init 1 — plain activation), so each unit can interpolate
@@ -176,6 +239,7 @@ class RealMLPNet(nn.Module):
         bias_lr_factor: float = 0.1,
         linear_skip_idx: list[int] | None = None,
         linear_skip_lr_factor: float = 1.0,
+        first_layer_groups: list[list[int]] | None = None,
     ) -> None:
         super().__init__()
         if activation not in _ACTIVATIONS:
@@ -216,8 +280,18 @@ class RealMLPNet(nn.Module):
         act_cls = {"mish": nn.Mish, "selu": nn.SELU, "relu": nn.ReLU}[activation]
         layers: list[nn.Module] = []
         d_in = embedding.d_out
-        for width in hidden_sizes:
-            layers.append(NTPLinear(d_in, width))
+        groups = None
+        if first_layer_groups is not None:
+            if not hidden_sizes:
+                raise ValueError("first_layer_groups requires a hidden layer")
+            groups = _first_layer_coordinates(first_layer_groups, embedding.feature_chunk_sizes)
+            if len(groups) > hidden_sizes[0]:
+                raise ValueError("first_layer_groups needs at least one hidden unit per group")
+        for i, width in enumerate(hidden_sizes):
+            if i == 0 and groups is not None and len(groups) > 1:
+                layers.append(GroupedNTPLinear(d_in, width, groups))
+            else:
+                layers.append(NTPLinear(d_in, width))
             layers.append(ParametricActivation(width, fn) if use_parametric_act else act_cls())
             if dropout > 0:
                 layers.append(
