@@ -47,6 +47,8 @@ from masamlp.utils.random import seed_everything
 
 def check_vectorizable(model: nn.Module, model_name: str | None = None) -> None:
     where = f" {model_name!r}" if model_name else ""
+    if hasattr(model, "training_terms"):
+        raise ValueError("training_terms cannot train vectorized; use ens_mode='loop'")
     if getattr(model, "wants_batch_indices", False) or hasattr(model, "set_candidates"):
         raise ValueError(f"retrieval models{where} cannot train vectorized; use ens_mode='loop'")
     if not getattr(model, "supports_vectorized", True):

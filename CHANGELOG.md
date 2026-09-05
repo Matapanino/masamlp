@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- WP3 (2026-09-05): register `hierarchical_realmlp`, adding coarse-to-fine,
+  zero-initialized numeric residual tables to the existing smooth RealMLP
+  embeddings without widening the trunk. Unseen values back off to supported
+  parents. Full-table support-dependent shrinkage uses WP2 training terms,
+  independently of minibatch frequency; tables and support state survive save/load.
+
+- WP2 (2026-09-05): opt-in model `training_terms(batch, raw)` hook with
+  trainer-weighted per-row auxiliary losses and separately normalized scalar
+  model penalties; zero coefficients preserve the existing training path.
+  Registered term state uses existing checkpoint and save/load handling.
+- Correct independent TabM member weighting to the mean of separately
+  normalized member risks when weight totals differ. Zero-total members
+  contribute zero to the fixed-member mean; all-zero batches remain skipped.
+- Reject training-term models in vectorized outer ensembles; document the
+  research interface, scaling contract, and example in `docs/training-terms.md`.
 - **Explicit PLE knots (2026-09-05 WP5)** — `fit(..., ple_bins={name: edges})`
   accepts raw-coordinate edges for every embedded numeric column. Names follow
   numeric routing through preprocessing, converted edges are validated after

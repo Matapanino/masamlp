@@ -483,6 +483,55 @@ from masamlp import MasaClassifier, realmlp_params
 clf = MasaClassifier(**{**realmlp_params("classification"), "n_epochs": 128})
 ```
 
+### Hierarchical RealMLP (`model="hierarchical_realmlp"`, WP3 2026-09-05)
+
+The smooth root is the existing numeric embedding (`num_embedding="pbld"`,
+`"plr"`, etc.). Zero-initialized residual tables add coarse-to-fine deviations
+inside the same numeric token; trunk width and initialization remain unchanged.
+Shared embedding options stay at the top level of `model_params`.
+
+- `hierarchies` (required): JSON list of `{"feature": numeric_index, "levels": [...]}`.
+  Feature indices address the preprocessed numeric block **before learnable scaling**
+  and must select embedded columns. Each coarse level is
+  `{"boundaries": [ascending split points], "counts": [count per interval]}`;
+  intervals are left-closed at a boundary (`searchsorted(..., right=True)`).
+  Finer boundaries must include every coarser boundary. The final level is
+  `{"values": [ascending exact values], "counts": [count per value]}`.
+  Counts must be finite and nonnegative, with positive support in every level.
+  Coordinates must remain distinct after float32 conversion.
+- `shrinkage` (default `1.0`): nonnegative coefficient of the full-table penalty.
+  `0.0` disables the training term and defines the unregularized control.
+- `support_power` (default `1.0`): nonnegative exponent for precision
+  `max(count, 1) ** (-support_power)` at supported entries. At zero, the prior
+  precision is constant; positive values further shrink rare effects relative
+  to common effects. Counts are fixed training support, never minibatch counts.
+- `backbone_params` (default `None`): dictionary of the ordinary `RealMLPNet`
+  constructor options, e.g. `{"hidden_sizes": [384, 384, 384], "activation": "selu"}`.
+  Set shared `num_scaling=True` explicitly to match the estimator's `realmlp`
+  defaults; the new registration does not change estimator defaults.
+
+Fit all coordinates and counts within the model's fitting boundary, excluding
+scoring and early-stopping rows. The caller supplies coordinates transformed by
+the same fitted `TabularPreprocessor` used by the estimator (or chooses
+`numeric_scaler="none"` for already-transformed inputs). Do not recompute keys
+from values after the model's learnable numeric scaling. No targets are needed
+to construct the hierarchy. Save/load stores constructor configuration and
+registered tables, coordinates, counts, support masks and precision buffers.
+
+An unseen exact value contributes no leaf deviation and retains any supported
+parent deviations; an unsupported parent contributes zero. The smooth root is
+always retained. Nonfinite keys contribute no residual (ordinary preprocessor
+imputation still applies before the model sees inputs).
+
+The objective adds `shrinkage * sum(precision * residual**2) / N`, where `N`
+is the fixed number of supported residual coordinates across every level.
+It is computed in FP32 through `ModelRegularizer`, once per optimizer step,
+independent of batch size, sampled value frequency, sample-weight scale or
+steps per epoch. Different numbers of steps can still change the optimization
+trajectory. Residual tables use zero optimizer weight decay, so this penalty
+is their only explicit regularization; backbone optimizer groups are preserved.
+See [training terms](training-terms.md) for loop/EMA/compile support and the
+explicit rejection of vectorized outer ensembles.
 ### Explicit fitted PLE knots (2026-09-05 WP5)
 
 `fit(X, y, ..., ple_bins={"income": [0., 10., 25., 100.]})` accepts

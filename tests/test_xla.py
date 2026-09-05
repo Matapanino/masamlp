@@ -521,3 +521,45 @@ def test_full_tabm_ple_independent_batches_trace_static_xla(clf_data):
     proba = model.predict_proba(X_test)
     assert proba.shape == (len(X_test), 2)
     assert np.all(np.isfinite(proba))
+
+
+def test_training_terms_and_unequal_member_weights_xla():
+    import torch
+
+    from masamlp.core.device import resolve_device, xla_sync_fn
+    from masamlp.core.objectives import SquaredError
+    from masamlp.core.trainer import weighted_loss
+    from masamlp.core.training_terms import ModelRegularizer, RowTerm, TrainingTerms
+
+    device = resolve_device("xla")
+    raw = torch.tensor([[[1.], [2.]], [[3.], [4.]]], device=device, requires_grad=True)
+    w = torch.tensor([[1., 0.], [3., 0.]], device=device)
+    terms = TrainingTerms(
+        auxiliary=(RowTerm(raw.squeeze(-1).square(), coefficient=.5),),
+        regularizers=(ModelRegularizer(raw.square().sum(), normalizer=4., coefficient=2.),),
+    )
+    loss = weighted_loss(SquaredError(), torch.zeros_like(raw), raw, w,
+                         member_batches=True, terms=terms)
+    loss.backward()
+    xla_sync_fn()()
+    # Member 0 risk = 7; member 1 = 0; aux adds 50%; penalty = 15.
+    torch.testing.assert_close(loss.cpu(), torch.tensor(20.25))
+    torch.testing.assert_close(raw.grad.cpu(), torch.tensor([[[1.375], [2.]], [[6.375], [4.]]]))
+
+
+def test_training_terms_trainer_xla():
+    import torch
+
+    from masamlp.core.objectives import SquaredError
+    from masamlp.core.trainer import Trainer, TrainerConfig
+    from masamlp.data.dataset import TabularData
+    from test_training_terms import TermsModel
+
+    x = torch.arange(16, dtype=torch.float32).reshape(8, 2) / 16
+    data = TabularData(x, torch.empty(8, 0, dtype=torch.long), x[:, :1])
+    model = TermsModel()
+    before = model.aux_head.weight.detach().clone()
+    Trainer().fit(model, SquaredError(), data, [], [],
+                  TrainerConfig(n_epochs=2, batch_size=4, device="xla", amp=False))
+    assert torch.isfinite(model.aux_head.weight.cpu()).all()
+    assert not torch.equal(before, model.aux_head.weight.cpu())
