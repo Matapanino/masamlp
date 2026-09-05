@@ -92,3 +92,38 @@ def test_requires_ple():
     x, y = data()
     with pytest.raises(ValueError, match="num_embedding='ple'"):
         MasaClassifier(n_epochs=1).fit(x, y, ple_bins={"a": [-2, 2]})
+
+
+def test_unnamed_array_regression_and_refit(tmp_path):
+    from masamlp import MasaRegressor
+
+    x = np.arange(120, dtype=float).reshape(60, 2)
+    y = np.sin(x[:, 0])
+    bins = {"1": [1., 11., 119.], "0": [0., 20., 118.]}
+    m = MasaRegressor(model="realmlp", model_params={"hidden_sizes": [8], "n_bins": 3},
+                      num_embedding="ple", numeric_scaler="standard", n_epochs=1,
+                      device="cpu").fit(x, y, ple_bins=bins)
+    saved = copy.deepcopy(m.resolved_model_params_["_ple_bins"])
+    m.save_model(tmp_path / "regressor")
+    loaded = MasaRegressor.load_model(tmp_path / "regressor")
+    np.testing.assert_array_equal(m.predict(x), loaded.predict(x))
+    loaded.fit(x, y)
+    assert loaded.resolved_model_params_["_ple_bins"] != saved
+
+
+def test_automatic_onehot_bypass_with_explicit_bins():
+    x, y = data()
+    bins = {"b": [11, 29], "a": [-2, 2], "linear": [-1, 1]}
+    m = MasaClassifier(model="realmlp", model_params={"hidden_sizes": [8]},
+                       num_embedding="ple", cat_encoding="onehot", n_epochs=1,
+                       device="cpu").fit(x, y, ple_bins=bins)
+    assert m.resolved_model_params_["num_embedding_idx"] == [0, 1, 2]
+    assert len(m.resolved_model_params_["_ple_bins"]) == 3
+
+
+def test_duplicate_input_names_are_ambiguous():
+    x, y = data()
+    x.columns = ["a", "cat", "a", "linear"]
+    with pytest.raises(ValueError, match="unique input column names"):
+        MasaClassifier(model="realmlp", num_embedding="ple", n_epochs=1,
+                       device="cpu").fit(x, y, ple_bins={"a": [-2, 2], "linear": [-1, 1]})
