@@ -244,6 +244,22 @@ defaults.
 | `n_blocks` | automatic | Plain `Linear → ReLU → Dropout` depth. Mini stays at 3. Full defaults to 3 with raw numerics and 2 when a numeric embedding is configured, matching `TabM.make`. |
 | `dropout` | `0.1` | Dropout after every backbone activation. |
 | `adapter_std` | `0.5` | Mini-only std of its legacy input adapter `N(1, adapter_std)`. Full uses the official initialization: chunk-shared first `r` is random ±1 for raw input or `N(0,1)` with a numeric embedding; every later `r` and every `s` starts at one. |
+| `first_layer_groups` | `None` | Full-only integer group ID per `embedding.feature_chunk_sizes` entry; `-1` is shared across groups. Hidden units cycle through sorted nonnegative groups, with all other first-layer connections fixed to zero. Initial active weights are rescaled for their effective fan-in. |
+| `member_feature_mask` | `None` | Full-only `k` lists of booleans, one per embedding feature chunk. False removes that entire chunk from the member in training and prediction. Each member must retain at least one chunk. Fixed masks are saved with the model. |
+| `brier_coefficient` | `0.0` | Full-only nonnegative auxiliary squared probability error for **binary classification**, added to the primary objective through trainer-weighted per-row terms. Requires one logit; use only with binary targets in `[0,1]`. Soft targets and independent member weights are supported. Zero creates no term tensors. |
+
+These three options are experimental departures from the paper defaults. They
+retain the full model's shared backbone weights, member adapters, independent
+heads, and probability-mean prediction. Default values preserve initialization
+and the original state-dict layout. Chunk indices describe the **embedding
+output**, not input dataframe order: selectively embedded numeric chunks come
+first, then bypass numeric/one-hot chunks, then embedded categorical chunks.
+Use the fitted preprocessor and embedding routing to derive this ordering.
+Connectivity restricts only the first layer; later dense layers can mix groups.
+Member masks do not add inverse-retention scaling.
+The Brier option follows the training-terms interface's existing execution
+limits (outer vectorized ensembling rejects enabled hooks). With coefficient
+zero, no hook is attached and the original outer ensembling support is intact.
 
 Full layers initialize shared weights and initially equal member biases from
 `U(-1/sqrt(fan_in), 1/sqrt(fan_in))`; the independent head initializes both

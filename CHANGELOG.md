@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in TabM full first-layer feature groups, fixed member feature views,
+  and an auxiliary binary Brier term through the existing weighted training-term
+  interface. Defaults preserve original initialization, predictions and state
+  layout; enabled masks and terms support soft targets and save/load.
+
 ## 0.11.0 (2026-09-05)
 
 - WP3 (2026-09-05): register `hierarchical_realmlp`, adding coarse-to-fine,
