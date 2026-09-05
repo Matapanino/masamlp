@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Explicit PLE knots (2026-09-05 WP5)** — `fit(..., ple_bins={name: edges})`
+  accepts raw-coordinate edges for every embedded numeric column. Names follow
+  numeric routing through preprocessing, converted edges are validated after
+  scaling/float32 conversion and persist in the existing saved embedding state.
+  Default quantile fitting is unchanged. Supervised knot fitting remains the
+  caller's training-boundary responsibility; refits require the mapping again.
+
 ## 0.10.0 (2026-09-04)
 
 - **Soft binary targets** — `MasaClassifier.fit` accepts a floating 1-D `y`

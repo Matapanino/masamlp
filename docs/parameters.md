@@ -482,3 +482,21 @@ from masamlp import MasaClassifier, realmlp_params
 
 clf = MasaClassifier(**{**realmlp_params("classification"), "n_epochs": 128})
 ```
+
+### Explicit fitted PLE knots (2026-09-05 WP5)
+
+`fit(X, y, ..., ple_bins={"income": [0., 10., 25., 100.]})` accepts
+raw-coordinate **edges including endpoints**, with `num_embedding="ple"`.
+Use `num_embedding_cols=["income"]` to restrict the embedded block. The mapping
+must cover exactly the embedded original numeric columns; categorical/one-hot
+columns and duplicate input names are rejected. Arrays and lists are accepted.
+Each column may have a different edge count; `model_params["n_bins"]` controls
+only the default quantile path, not explicit resolution.
+
+The fitted preprocessor converts edges through the same scaling path as inputs.
+Edges must remain finite and strictly increasing after float32 conversion;
+clipping/collisions fail instead of silently changing resolution. Converted
+edges live in `resolved_model_params_["_ple_bins"]` and saved model buffers,
+so loaded predictions need no knot builder. A subsequent `fit` must receive
+`ple_bins` again; omitting it recomputes quantiles. Supervised edge selection
+is the caller's responsibility and must exclude scoring and validation labels.
