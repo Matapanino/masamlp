@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0 (unreleased)
+
+- Add opt-in `realmlp` `tower_groups`: disjoint feature groups become parallel
+  towers that stay separated through every hidden layer, summed by one packed
+  additive output layer with a single shared bias. `hidden_sizes` gives each
+  tower's widths; the first layer of every tower takes `first_layer_lr_factor`
+  and the data-driven init walks each tower separately. `None` or one full
+  group preserves the dense construction, RNG draws, parameter groups and
+  predictions, and `first_layer_groups` is unchanged.
+
 ## 0.13.0 (2026-09-06)
 
 - Add opt-in TabM full `mixture_alpha`: mix independent-member binary BCE with
