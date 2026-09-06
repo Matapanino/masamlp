@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.0 (unreleased)
+
+- Add opt-in TabM full `mixture_alpha`: mix independent-member binary BCE with
+  stable BCE of the deployed probability mean. Supports soft targets, sample
+  weights, structured views and additive Brier terms. Requires shared batches
+  and the built-in binary objective; multiple outer members use loop execution.
+  Zero preserves the exact original training path and state layout; inference
+  and saved-model predictions retain probability averaging.
+
 ## 0.12.0 (2026-09-06)
 
 - Add opt-in `realmlp` `first_layer_groups`: disjoint feature groups restrict the

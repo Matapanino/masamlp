@@ -130,6 +130,17 @@ class FullEnsembleHead(nn.Module):
 
 
 class TabM(nn.Module):
+    """Weight-shared ensemble with optional trainer-owned binary mixture risk.
+
+    ``mixture_alpha`` is a full-only model configuration scalar, not tensor
+    state. The trainer combines flattened BinaryLogistic losses with stable
+    BCE of the shared rows' probability mean; objectives never see a member
+    dimension. This avoids a signed replacement through nonnegative RowTerm
+    coefficients. Brier remains an additive per-member term. Positive alpha
+    requires shared batches and outer loop execution when n_ens > 1. Zero
+    leaves the loss, RNG consumption, state dict and vectorized support intact.
+    """
+
     supports_member_batches = True
 
     def __init__(
@@ -145,12 +156,20 @@ class TabM(nn.Module):
         first_layer_groups: list[int] | None = None,
         member_feature_mask: list[list[bool]] | None = None,
         brier_coefficient: float = 0.0,
+        mixture_alpha: float = 0.0,
     ) -> None:
         super().__init__()
         if variant not in ("mini", "full"):
             raise ValueError(f"variant must be 'mini' or 'full', got {variant!r}")
         if k < 1:
             raise ValueError(f"k must be >= 1, got {k}")
+        if not math.isfinite(mixture_alpha) or not 0.0 <= mixture_alpha <= 1.0:
+            raise ValueError("mixture_alpha must be finite and in [0, 1]")
+        if mixture_alpha and variant != "full":
+            raise ValueError("mixture_alpha > 0 requires variant='full'")
+        if mixture_alpha and out_dim != 1:
+            raise ValueError("mixture_alpha > 0 requires a single binary logit output")
+        self.mixture_alpha = float(mixture_alpha)
         if variant != "full" and (first_layer_groups is not None or
                                   member_feature_mask is not None or brier_coefficient != 0):
             raise ValueError("structured views and Brier terms require variant='full'")
