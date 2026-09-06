@@ -31,6 +31,13 @@ group at ``linear_skip_lr_factor`` with no weight decay. Its counterpart on
 the input side is :class:`~masamlp.models.base.FeatureEmbedding`'s
 ``num_embedding_idx``, which restricts the numeric embedding to a subset of
 the columns. Both default to ``None`` = the 0.9.0 model, byte for byte.
+
+0.14.0 adds the opt-in **tower groups**: ``tower_groups`` trains G >= 2
+parallel trunks over disjoint embedding chunks, separated through *every*
+hidden layer, and sums them in one packed additive head
+(``logit = sum_g readout_g(tower_g(x_g)) + b``) — no hidden-layer remixing
+and no gate.  ``None``, or a single group holding every chunk, is the dense
+model, byte for byte.
 """
 
 from __future__ import annotations
@@ -117,9 +124,11 @@ class NTPLinear(nn.Module):
         return pre + self.bias
 
 
-def _first_layer_coordinates(groups: list[list[int]], chunks: list[int]) -> list[list[int]]:
+def _first_layer_coordinates(
+    groups: list[list[int]], chunks: list[int], name: str = "first_layer_groups"
+) -> list[list[int]]:
     """Expand a complete disjoint partition of embedding chunks to coordinates."""
-    message = "first_layer_groups must partition every embedding feature chunk exactly once"
+    message = f"{name} must partition every embedding feature chunk exactly once"
     if not isinstance(groups, (list, tuple)) or not groups:
         raise ValueError(message)
     seen: list[int] = []
@@ -178,6 +187,23 @@ class GroupedNTPLinear(NTPLinear):
         pre = pre / std
         self.bias.copy_(_heplus_bias(pre))
         return pre + self.bias
+
+
+class _TowerBranch(nn.Module):
+    """One tower: a fixed slice of the embedding output plus its own trunk.
+
+    The index buffer is persistent, so a reloaded model reads exactly the
+    coordinates it was trained on, and it follows ``.to(device)`` — no
+    data-dependent shapes in ``forward``.
+    """
+
+    def __init__(self, coordinates: list[int], trunk: nn.Sequential) -> None:
+        super().__init__()
+        self.register_buffer("coordinates", torch.tensor(coordinates, dtype=torch.int64))
+        self.trunk = trunk
+
+    def forward(self, h: Tensor) -> Tensor:
+        return self.trunk(h.index_select(1, self.coordinates))
 
 
 class ParametricActivation(nn.Module):
@@ -240,6 +266,7 @@ class RealMLPNet(nn.Module):
         linear_skip_idx: list[int] | None = None,
         linear_skip_lr_factor: float = 1.0,
         first_layer_groups: list[list[int]] | None = None,
+        tower_groups: list[list[int]] | None = None,
     ) -> None:
         super().__init__()
         if activation not in _ACTIVATIONS:
@@ -278,8 +305,33 @@ class RealMLPNet(nn.Module):
             embedding.scaling = None
         fn = _ACTIVATIONS[activation]
         act_cls = {"mish": nn.Mish, "selu": nn.SELU, "relu": nn.ReLU}[activation]
-        layers: list[nn.Module] = []
+
+        def hidden_layer(
+            d_prev: int, width: int, first: list[list[int]] | None = None
+        ) -> list[nn.Module]:
+            """One hidden layer's modules — the recipe the dense trunk and
+            every tower share."""
+            modules: list[nn.Module] = [
+                NTPLinear(d_prev, width) if first is None
+                else GroupedNTPLinear(d_prev, width, first)
+            ]
+            modules.append(
+                ParametricActivation(width, fn) if use_parametric_act else act_cls()
+            )
+            if dropout > 0:
+                modules.append(
+                    ScheduledDropout(dropout)
+                    if dropout_schedule == "flat_cos"
+                    else nn.Dropout(dropout)
+                )
+            return modules
+
         d_in = embedding.d_out
+        if first_layer_groups is not None and tower_groups is not None:
+            raise ValueError(
+                "tower_groups and first_layer_groups are alternative ways to split the "
+                "first layer; set at most one"
+            )
         groups = None
         if first_layer_groups is not None:
             if not hidden_sizes:
@@ -287,20 +339,43 @@ class RealMLPNet(nn.Module):
             groups = _first_layer_coordinates(first_layer_groups, embedding.feature_chunk_sizes)
             if len(groups) > hidden_sizes[0]:
                 raise ValueError("first_layer_groups needs at least one hidden unit per group")
-        for i, width in enumerate(hidden_sizes):
-            if i == 0 and groups is not None and len(groups) > 1:
-                layers.append(GroupedNTPLinear(d_in, width, groups))
-            else:
-                layers.append(NTPLinear(d_in, width))
-            layers.append(ParametricActivation(width, fn) if use_parametric_act else act_cls())
-            if dropout > 0:
-                layers.append(
-                    ScheduledDropout(dropout)
-                    if dropout_schedule == "flat_cos"
-                    else nn.Dropout(dropout)
+        # Validation draws no random numbers, so a rejected partition leaves
+        # the RNG stream where it was.
+        towers = None
+        if tower_groups is not None:
+            if not hidden_sizes or any(width < 1 for width in hidden_sizes):
+                raise ValueError(
+                    "tower_groups requires at least one hidden layer, every width >= 1"
                 )
-            d_in = width
-        self.trunk = nn.Sequential(*layers)
+            expanded = _first_layer_coordinates(
+                tower_groups, embedding.feature_chunk_sizes, "tower_groups"
+            )
+            # One group is the dense model: take the original construction so
+            # no tower helper exists and no RNG draw moves.
+            if len(expanded) > 1:
+                towers = [sorted(coordinates) for coordinates in expanded]
+        self.towers: nn.ModuleList | None = None
+        if towers is None:
+            layers: list[nn.Module] = []
+            for i, width in enumerate(hidden_sizes):
+                first = groups if i == 0 and groups is not None and len(groups) > 1 else None
+                layers += hidden_layer(d_in, width, first)
+                d_in = width
+            self.trunk = nn.Sequential(*layers)
+        else:
+            branches: list[nn.Module] = []
+            for coordinates in towers:
+                modules: list[nn.Module] = []
+                d_tower = len(coordinates)
+                for width in hidden_sizes:
+                    modules += hidden_layer(d_tower, width)
+                    d_tower = width
+                branches.append(_TowerBranch(coordinates, nn.Sequential(*modules)))
+            self.towers = nn.ModuleList(branches)
+            # One packed readout over the concatenated towers; the rescaling in
+            # ``_tower_features`` turns its single NTP factor into each tower's
+            # own, so the head is the sum of per-tower readouts with one bias.
+            d_in = len(towers) * hidden_sizes[-1]
         self.output_layer = NTPLinear(d_in, out_dim, zero_init=zero_init_output)
         if scale_position == "first_layer":
             self.front_scale = ScalingLayer(embedding.d_out)
@@ -333,11 +408,22 @@ class RealMLPNet(nn.Module):
                 if isinstance(module, ScheduledDropout):
                     module.set_factor(factor)
 
+    def _tower_features(self, h: Tensor) -> Tensor:
+        """The towers' concatenated outputs, scaled by ``sqrt(G)`` so the
+        packed head's single ``1/sqrt(G * width)`` factor acts as each tower's
+        own ``1/sqrt(width)``: ``logit = sum_g h_g @ W_g / sqrt(width) + b``."""
+        return math.sqrt(len(self.towers)) * torch.cat(
+            [tower(h) for tower in self.towers], dim=1
+        )
+
     def forward(self, x_num: Tensor, x_cat: Tensor) -> Tensor:
+        # The embedding runs once; every tower reads its own slice of it.
         h = self.embedding(x_num, x_cat)
         if self.front_scale is not None:
             h = self.front_scale(h)
-        out = self.output_layer(self.trunk(h))
+        out = self.output_layer(
+            self.trunk(h) if self.towers is None else self._tower_features(h)
+        )
         if self.skip_weight is not None:
             # The skip reads the numeric input as the preprocessor produced
             # it — before the learnable scaling layer and before any numeric
@@ -365,8 +451,17 @@ class RealMLPNet(nn.Module):
         h = self.embedding(x_num, x_cat)
         if self.front_scale is not None:
             h = self.front_scale(h)
-        for module in self.trunk:
-            h = module.data_init_(h) if isinstance(module, NTPLinear) else module(h)
+        if self.towers is None:
+            for module in self.trunk:
+                h = module.data_init_(h) if isinstance(module, NTPLinear) else module(h)
+        else:
+            features = []
+            for tower in self.towers:
+                z = h.index_select(1, tower.coordinates)
+                for module in tower.trunk:
+                    z = module.data_init_(z) if isinstance(module, NTPLinear) else module(z)
+                features.append(z)
+            h = math.sqrt(len(self.towers)) * torch.cat(features, dim=1)
         if not self.zero_init_output:
             self.output_layer.data_init_(h)
         if was_training:
@@ -380,7 +475,8 @@ class RealMLPNet(nn.Module):
         ``plr_lr_factor``.
 
         ``first_layer_lr_factor`` multiplies the first trunk layer's weight
-        **and** bias factors — as pytabkit does
+        **and** bias factors (with ``tower_groups``, the first layer of every
+        tower) — as pytabkit does
         (``pytabkit/models/nn_models/models.py:283-284``) — and never the
         scaling layer or the numeric embedding.
 
@@ -390,8 +486,14 @@ class RealMLPNet(nn.Module):
         data, not shrunk by the trunk's regularizer.
         """
         ntp = [m for m in self.modules() if isinstance(m, NTPLinear)]
-        first = next((m for m in self.trunk if isinstance(m, NTPLinear)), None)
-        rest = [m for m in ntp if m is not first]
+        trunks = [self.trunk] if self.towers is None else [t.trunk for t in self.towers]
+        firsts = [
+            layer
+            for trunk in trunks
+            for layer in [next((m for m in trunk if isinstance(m, NTPLinear)), None)]
+            if layer is not None
+        ]
+        rest = [m for m in ntp if all(m is not f for f in firsts)]
         weights = [m.weight for m in rest]
         biases = [m.bias for m in rest]
         scale = (
@@ -410,8 +512,8 @@ class RealMLPNet(nn.Module):
             else []
         )
         skip = [self.skip_weight, self.skip_bias] if self.skip_weight is not None else []
-        first_w = [first.weight] if first is not None else []
-        first_b = [first.bias] if first is not None else []
+        first_w = [m.weight for m in firsts]
+        first_b = [m.bias for m in firsts]
         assigned = {
             id(p) for p in weights + biases + scale + act + plr + skip + first_w + first_b
         }
