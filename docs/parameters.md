@@ -325,6 +325,7 @@ The inner axis composes with outer `n_ens` in loop or vectorized mode.
 | `scale_lr_factor` | `6.0` | Learning-rate factor for the scaling layer. RealMLP-TD's tuned configurations use values around 2–10. |
 | `first_layer_lr_factor` | `1.0` | Extra learning-rate factor on the first hidden layer's weight **and** bias (pytabkit applies it to both, and to neither the scaling layer nor the numeric embedding). |
 | `first_layer_groups` | `None` | Opt-in disjoint source groups for the first hidden layer. A list of lists partitioning indices of `embedding.feature_chunk_sizes` exactly once; each group gets a contiguous, nearly equal share of first-layer units and its own active-fan-in normalization. Whole embedded feature chunks stay together. Later layers remain dense. `None` or one full group preserves the dense model and RNG draws. Requires a hidden layer with at least one unit per group. Groups address the embedding output order (embedded numerics, bypass numerics, then categorical embeddings), including any preprocessing expansion; callers own semantic source mapping. Fixed masks constrain both training and data-driven initialization and persist through save/load. |
+| `tower_groups` | `None` | Opt-in parallel towers separated through every hidden layer. A list of lists partitioning indices of `embedding.feature_chunk_sizes` exactly once, using the same whole-chunk contract and embedding output order as `first_layer_groups`; callers own semantic source mapping. Requires at least one hidden layer and positive widths; mutually exclusive with `first_layer_groups`. Every tower's first linear receives `first_layer_lr_factor`. Data-driven initialization and scheduled dropout reach every tower, and coordinate index buffers persist through save/load. |
 | `bias_lr_factor` | `0.1` | Learning-rate factor for every NTP bias (biases also never receive weight decay). |
 | `linear_skip_idx` | `None` | Positional form of the estimator's `linear_skip_cols`: positions in the numeric block that also feed a zero-initialized linear map onto the output (`raw = trunk(x) + x_skip @ W_skip + b_skip`), read *before* the scaling layer and any numeric embedding. Its parameters form their own optimizer group at `linear_skip_lr_factor` with zero weight decay. |
 
@@ -334,6 +335,13 @@ architecture of Holzmüller et al. 2024 (arXiv:2407.04491). This model is
 about its *training recipe* as much as its shape — pair it with
 `masamlp.realmlp_params(task)` or `realmlp_td_params(task)` rather than
 tuning in isolation.
+
+With two or more `tower_groups`, `hidden_sizes` gives the widths of **each
+tower**. Their readouts add with per-tower NTP normalization and one shared
+output bias (`logit = sum_g readout_g(tower_g(x_g)) + b`), with no hidden-layer
+mixing or gate; any linear skip is added as usual. `tower_groups=None` or a
+single full group (in any order) uses the original dense path, preserving
+state, RNG draws, optimizer-group ordering, and predictions exactly.
 
 ### `realm` — RealM (RealMLP + full BatchEnsemble)
 
