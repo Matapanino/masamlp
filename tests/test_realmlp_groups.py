@@ -87,3 +87,30 @@ def test_grouped_estimator_save_load_and_weighted_fit(tmp_path):
     after = MasaClassifier.load_model(tmp_path / 'model').predict_proba(x)
     np.testing.assert_array_equal(before, after)
     assert np.isfinite(before).all()
+
+
+def test_multi_group_first_layer_construction_and_output_are_pinned():
+    """Regression pin: shared trunk plumbing must not move the grouped first
+    layer's RNG consumption, mask/scale layout or arithmetic."""
+    torch.manual_seed(3)
+    grouped = make([[0, 2], [1, 3]], hidden_sizes=[6, 4])
+    state = torch.random.get_rng_state()
+    torch.manual_seed(3)
+    make(None, hidden_sizes=[6, 4])
+    assert torch.equal(state, torch.random.get_rng_state())
+    layer = grouped.trunk[0]
+    assert layer.group_mask.shape == (4, 6)
+    torch.testing.assert_close(layer.group_mask[[0, 2]][:, :3], torch.ones(2, 3))
+    assert torch.count_nonzero(layer.group_mask[[1, 3]][:, :3]) == 0
+    torch.testing.assert_close(layer.group_mask[[1, 3]][:, 3:], torch.ones(2, 3))
+    torch.testing.assert_close(layer.group_scale, torch.full((6,), 2 ** -0.5))
+    # Deterministic weights: the pinned output is then a pure function of the
+    # masking and the group fan-in scaling, not of the RNG implementation.
+    with torch.no_grad():
+        layer.weight.copy_(torch.arange(24.0).reshape(4, 6) / 10)
+        layer.bias.zero_()
+    torch.testing.assert_close(
+        layer(torch.tensor([[1.0, 2.0, 3.0, 4.0]])),
+        torch.tensor([[2.545584, 2.828427, 3.111270, 7.212489, 7.636753, 8.061017]]),
+        atol=1e-6, rtol=1e-6,
+    )

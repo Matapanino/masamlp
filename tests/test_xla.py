@@ -144,6 +144,29 @@ def test_same_seed_same_result_xla(reg_data):
     np.testing.assert_allclose(p1, p2, atol=1e-7)
 
 
+def test_tower_groups_xla(reg_data):
+    # Full-depth tower groups add an index_select on the embedding output and
+    # a packed additive head; both must stay inside one static XLA graph.
+    X, y, X_test, _ = reg_data
+    kw = dict(
+        model="realmlp",
+        model_params={"hidden_sizes": [16, 16], "tower_groups": [[0, 1, 2], [3, 4, 5]],
+                      "dropout": 0.15, "dropout_schedule": "flat_cos"},
+        n_epochs=6,
+        device="xla",
+        amp=False,
+        random_state=5,
+    )
+    from masamlp.regressor import MasaRegressor
+
+    fitted = MasaRegressor(**kw).fit(X, y)
+    p1 = fitted.predict(X_test)
+    p2 = MasaRegressor(**kw).fit(X, y).predict(X_test)
+    assert len(fitted.model_.towers) == 2
+    assert np.all(np.isfinite(p1))
+    np.testing.assert_allclose(p1, p2, atol=1e-7)
+
+
 def test_save_load_roundtrip_xla(tmp_path, reg_data):
     from masamlp.regressor import MasaRegressor
 
