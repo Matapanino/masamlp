@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.0 (unreleased)
+
+- Add opt-in RealMLP `tower_groups`: disjoint whole-feature towers remain
+  separated through every hidden layer and sum their readouts with one shared
+  output bias. Per-tower widths, data-driven initialization, scheduled dropout,
+  optimizer factors, EMA and saved-model round trips are covered by tests;
+  dense defaults and `first_layer_groups` retain their existing behavior.
+  No accuracy claim is made by this library PR.
+
 ## 0.13.0 (2026-09-06)
 
 - Add opt-in TabM full `mixture_alpha`: mix independent-member binary BCE with
