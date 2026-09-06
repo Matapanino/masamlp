@@ -52,12 +52,18 @@ def test_tower_none_and_single_group_are_exact_dense():
               scale_position='first_layer', num_scaling=True, init_mode='std+he5')
     x, cat = torch.randn(64, 4), torch.randint(0, 3, (64, 1))
 
+    def snapshot(model):
+        return {k: v.detach().clone() for k, v in model.state_dict().items()}
+
     torch.manual_seed(17)
     dense = build_model('realmlp', dict(kw), 4, [3], 1, 'pbld')
     dense_rng = torch.random.get_rng_state()
+    dense_state = snapshot(dense)
+    dense_groups = group_signature(dense)
     torch.manual_seed(5)
     dense.data_init(x, cat)
     dense_init_rng = torch.random.get_rng_state()
+    dense_init_state = snapshot(dense)
     torch.manual_seed(9)
     dense_train_out = dense(x, cat)      # train mode: seeded dropout draws
     dense.eval()
@@ -69,14 +75,14 @@ def test_tower_none_and_single_group_are_exact_dense():
         model = build_model('realmlp', {**kw, 'tower_groups': groups}, 4, [3], 1, 'pbld')
         assert torch.equal(dense_rng, torch.random.get_rng_state())
         assert model.towers is None
-        assert list(model.state_dict()) == list(dense.state_dict())
-        for key, value in dense.state_dict().items():
+        assert list(model.state_dict()) == list(dense_state)
+        for key, value in dense_state.items():
             torch.testing.assert_close(model.state_dict()[key], value, atol=0, rtol=0)
-        assert group_signature(model) == group_signature(dense)
+        assert group_signature(model) == dense_groups
         torch.manual_seed(5)
         model.data_init(x, cat)
         assert torch.equal(dense_init_rng, torch.random.get_rng_state())
-        for key, value in dense.state_dict().items():
+        for key, value in dense_init_state.items():
             torch.testing.assert_close(model.state_dict()[key], value, atol=0, rtol=0)
         torch.manual_seed(9)
         torch.testing.assert_close(model(x, cat), dense_train_out, atol=0, rtol=0)
