@@ -15,12 +15,14 @@ so objectives never see a member dim — see core/objectives.py.
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from masamlp.core.device import (
@@ -33,7 +35,7 @@ from masamlp.core.device import (
     xla_sync_fn,
 )
 from masamlp.core.metrics import BaseMetric
-from masamlp.core.objectives import BaseObjective
+from masamlp.core.objectives import BaseObjective, BinaryLogistic
 from masamlp.core.training_terms import TrainingTerms
 from masamlp.data.dataset import TabularData
 from masamlp.utils.random import seed_everything
@@ -141,6 +143,20 @@ class EarlyStopper:
         return self._bad_epochs >= self.patience
 
 
+def _validate_mixture_risk(
+    alpha: float, objective: BaseObjective, member_batches: bool,
+) -> None:
+    if not math.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
+        raise ValueError("mixture_alpha must be finite and in [0, 1]")
+    if alpha:
+        if member_batches:
+            raise ValueError("mixture_alpha > 0 requires share_training_batches=True")
+        # A subclass may override the loss: do not silently mix a custom risk
+        # with BCE, even if it uses the same prediction transform.
+        if type(objective) is not BinaryLogistic:
+            raise ValueError("mixture_alpha > 0 requires the built-in BinaryLogistic objective")
+
+
 def weighted_loss(
     objective: BaseObjective,
     y: Tensor,
@@ -149,6 +165,7 @@ def weighted_loss(
     member_batches: bool = False,
     *,
     terms: TrainingTerms | None = None,
+    mixture_alpha: float = 0.0,
 ) -> Tensor:
     """Trainer-owned weighted data risk plus optional model training terms.
 
@@ -162,7 +179,36 @@ def weighted_loss(
     Auxiliary losses follow the same reduction; model regularizers use their
     own fixed normalizers and are added once. The Trainer skips an entirely
     zero-weight batch, including regularizers and optimizer/EMA updates.
+
+    TabM full can opt into ``(1-alpha)*mean_m BCE(q,p_m) +
+    alpha*BCE(q,mean_m p_m)`` via its ``mixture_alpha`` scalar. Only the
+    trainer sees the member dimension: the objective still receives flattened
+    rows. Compute log-mean probabilities by logsumexp(logsigmoid(+/-logits))
+    minus log(k), never log(mean(sigmoid(logits))). Both BCE branches use the
+    objective's current label smoothing. Broadcast the mixture loss over k
+    members before the existing reduction, applying row weights once with the
+    same normalization. Auxiliary terms (including per-member Brier on the
+    unsmoothed target) are added unchanged. Alpha=0 and k=1 take the original
+    arithmetic path exactly. Positive alpha requires shared rows and the
+    built-in binary objective; the TrainingTerms contract is unchanged.
     """
+    _validate_mixture_risk(mixture_alpha, objective, member_batches)
+    mixture = None
+    if mixture_alpha:
+        if raw.ndim != 3 or raw.shape[-1] != 1:
+            raise ValueError("mixture_alpha > 0 requires binary logits shaped (n, k, 1)")
+        if raw.shape[1] > 1:
+            logits = raw.squeeze(-1)
+            # Preserve float64 for numerical checks; promote low precision
+            # before sensitive operations (not just the reduced scalar).
+            if logits.dtype in (torch.float16, torch.bfloat16):
+                logits = logits.float()
+            log_k = math.log(raw.shape[1])
+            log_p = torch.logsumexp(F.logsigmoid(logits), dim=1) - log_k
+            log_not_p = torch.logsumexp(F.logsigmoid(-logits), dim=1) - log_k
+            s = objective.label_smoothing
+            target = y * (1.0 - s) + 0.5 * s
+            mixture = -(target * log_p + (1.0 - target) * log_not_p)
     row_shape = raw.shape[:-1]
     independent = raw.ndim == 3 and member_batches
     if raw.ndim == 3:
@@ -175,6 +221,8 @@ def weighted_loss(
             y = y.repeat_interleave(k, dim=0)
             weight = None if weight is None else weight.repeat_interleave(k, dim=0)
     loss_i = objective.per_sample_loss(y, raw)
+    if mixture is not None:
+        loss_i = (1.0 - mixture_alpha) * loss_i + mixture_alpha * mixture.repeat_interleave(k)
     if terms is not None:
         for term in terms.auxiliary:
             if term.values.shape != row_shape:
@@ -394,6 +442,8 @@ class Trainer:
         config: TrainerConfig,
         inverse_target: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> TrainResult:
+        mixture_alpha = getattr(model, "mixture_alpha", 0.0)
+        _validate_mixture_risk(mixture_alpha, objective, not config.share_training_batches)
         device = resolve_device(config.device)
         if config.seed_scope == "global":
             seed_everything(config.random_state)
@@ -530,6 +580,7 @@ class Trainer:
                     batch.weight,
                     member_batches=not config.share_training_batches,
                     terms=terms,
+                    mixture_alpha=mixture_alpha,
                 )
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()

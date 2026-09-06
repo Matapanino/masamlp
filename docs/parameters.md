@@ -247,8 +247,9 @@ defaults.
 | `first_layer_groups` | `None` | Full-only integer group ID per `embedding.feature_chunk_sizes` entry; `-1` is shared across groups. Hidden units cycle through sorted nonnegative groups, with all other first-layer connections fixed to zero. Initial active weights are rescaled for their effective fan-in. |
 | `member_feature_mask` | `None` | Full-only `k` lists of booleans, one per embedding feature chunk. False removes that entire chunk from the member in training and prediction. Each member must retain at least one chunk. Fixed masks are saved with the model. |
 | `brier_coefficient` | `0.0` | Full-only nonnegative auxiliary squared probability error for **binary classification**, added to the primary objective through trainer-weighted per-row terms. Requires one logit; use only with binary targets in `[0,1]`. Soft targets and independent member weights are supported. Zero creates no term tensors. |
+| `mixture_alpha` | `0.0` | Full-only finite coefficient in `[0,1]` mixing mean-member BCE with BCE of the deployed probability mean. Positive values require the built-in `BinaryLogistic` objective, one binary logit, and `share_training_batches=True`; hard and soft targets and sample weights are supported. Multiple outer members require `ens_mode="loop"`. |
 
-These three options are experimental departures from the paper defaults. They
+These four options are experimental departures from the paper defaults. They
 retain the full model's shared backbone weights, member adapters, independent
 heads, and probability-mean prediction. Default values preserve initialization
 and the original state-dict layout. Chunk indices describe the **embedding
@@ -260,6 +261,27 @@ Member masks do not add inverse-retention scaling.
 The Brier option follows the training-terms interface's existing execution
 limits (outer vectorized ensembling rejects enabled hooks). With coefficient
 zero, no hook is attached and the original outer ensembling support is intact.
+
+With `mixture_alpha=alpha`, the primary loss for shared row target `q` is
+`(1-alpha) * mean_m BCE(q, sigmoid(z_m)) + alpha * BCE(q, mean_m sigmoid(z_m))`.
+The trainer computes both mixture log probabilities as
+`logsumexp_m(logsigmoid(+/-z_m)) - log(k)` for stability at extreme logits;
+objectives still see flattened rows. Row sample weights use the existing
+weighted mean, with no extra weight factor. The built-in objective's current
+label smoothing applies to both BCE branches (including scheduled smoothing).
+Custom objectives and regression objectives are rejected for positive alpha.
+
+If Brier is also enabled, the total per-row risk adds
+`brier_coefficient * mean_m (sigmoid(z_m) - q)**2`, using the unsmoothed target
+as before. This auxiliary disagreement penalty remains even at `alpha=1`;
+Brier is neither scaled by `(1-alpha)` nor changed to a squared mean error.
+Model regularizers, if supplied, are still added once after data reduction.
+Positive alpha rejects independent member batches even with `k=1` and rejects
+`ens_mode="vectorized"` when `n_ens>1`; `n_ens=1` uses the ordinary trainer and
+is allowed. Alpha zero keeps all prior execution support and exact arithmetic;
+`k=1` also bypasses mixture arithmetic for every valid alpha. Group and member
+masks compose unchanged. The option is saved in model configuration, adds no
+state-dict tensors, and never affects `predict_proba` or `predict_proba_members`.
 
 Full layers initialize shared weights and initially equal member biases from
 `U(-1/sqrt(fan_in), 1/sqrt(fan_in))`; the independent head initializes both
