@@ -563,3 +563,25 @@ def test_training_terms_trainer_xla():
                   TrainerConfig(n_epochs=2, batch_size=4, device="xla", amp=False))
     assert torch.isfinite(model.aux_head.weight.cpu()).all()
     assert not torch.equal(before, model.aux_head.weight.cpu())
+
+
+def test_realmlp_tower_groups_xla(tmp_path):
+    import torch
+
+    from masamlp.classifier import MasaClassifier
+
+    x = np.random.default_rng(67).normal(size=(32, 4)).astype("float32")
+    y = (x[:, 0] + x[:, 2] > 0).astype(int)
+    model = MasaClassifier(model="realmlp", num_embedding="pbld", model_params={
+        "tower_groups": [[0, 1], [2, 3]], "hidden_sizes": [4, 4],
+        "d_num_embedding": 3, "n_frequencies": 3, "num_scaling": True,
+        "dropout": 0.1, "dropout_schedule": "flat_cos", "use_parametric_act": True,
+    }, n_epochs=2, batch_size=16, device="xla", amp=False, random_state=67).fit(x, y)
+    for tower in model.model_.towers:
+        assert tower.indices.device.type == "xla"
+        assert tower.indices.dtype == torch.int64
+    before = model.predict_proba(x)
+    assert before.shape == (32, 2) and np.isfinite(before).all()
+    model.save_model(tmp_path / "towers")
+    after = MasaClassifier.load_model(tmp_path / "towers").predict_proba(x)
+    np.testing.assert_allclose(before, after, atol=1e-6)
