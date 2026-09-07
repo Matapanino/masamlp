@@ -51,6 +51,7 @@ from masamlp.models.layers import (
 )
 from masamlp.models.lnn import CfCCell, TabularLNN
 from masamlp.models.modernnca import ModernNCA
+from masamlp.models.profiled_realmlp import ProfiledRealMLPNet
 from masamlp.models.realm import BatchEnsembleLinear, EnsembleNTPHead, RealMNet
 from masamlp.models.realmlp import NTPLinear, RealMLPNet
 from masamlp.models.resnet import TabularResNet
@@ -92,6 +93,7 @@ register_model("resnet")(TabularResNet)
 register_model("danet")(DANet)
 register_model("lnn")(TabularLNN)
 register_model("realmlp")(RealMLPNet)
+register_model("profiled_realmlp")(ProfiledRealMLPNet)
 register_model("hierarchical_realmlp")(HierarchicalRealMLPNet)
 register_model("realm")(RealMNet)
 register_model("tabr")(TabR)
@@ -165,7 +167,7 @@ def build_model(
             **embed_kwargs,
         }
         return builder(embedding_config=config, out_dim=out_dim, **params)
-    if name == "realmlp" and params.get("arbitration") is not None:
+    if name in ("realmlp", "profiled_realmlp") and params.get("arbitration") is not None:
         options = dict(params["arbitration"])
         if "n_inputs" in options:
             raise ValueError("arbitration n_inputs is inferred by build_model; omit it")
@@ -177,7 +179,11 @@ def build_model(
     embedding = FeatureEmbedding(
         n_num, cat_cardinalities, num_embedding=num_embedding, **embed_kwargs
     )
-    if name == "realmlp" and params.get("arbitration") is not None and embedding.num_embedding:
+    if (
+        name in ("realmlp", "profiled_realmlp")
+        and params.get("arbitration") is not None
+        and embedding.num_embedding
+    ):
         # FeatureEmbedding's ordinary full numeric embedding records one output
         # chunk per numeric coordinate.  Arbitration's private input chunk map
         # instead describes the *reduced* semantic frame, so coalesce those

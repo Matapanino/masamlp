@@ -366,7 +366,10 @@ def _update_ema(model: nn.Module, ema_params: dict[str, Tensor], decay: float) -
     """In-place EMA update of the shadow parameters after an optimizer step."""
     with torch.no_grad():
         for name, param in model.named_parameters():
-            ema_params[name].mul_(decay).add_(param.detach(), alpha=1.0 - decay)
+            if param.requires_grad:
+                ema_params[name].mul_(decay).add_(param.detach(), alpha=1.0 - decay)
+            else:
+                ema_params[name].copy_(param.detach())
 
 
 def _swap_in_params(model: nn.Module, new_params: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -429,6 +432,29 @@ def _make_epoch_batches(
     if drop_last and len(chunks[-1]) < batch_size:
         chunks = chunks[:-1]
     return chunks
+
+
+@torch.no_grad()
+def _prepare_prediction_state(model: nn.Module, train: TabularData, batch_size: int) -> None:
+    """Refresh optional model prediction statistics using training covariates only.
+
+    Models own sufficient-statistic algebra; the Trainer owns batching and
+    mode transitions. Prediction callers never fit state from their queries.
+    Runs outside autocast for stable projection statistics.
+    """
+    needs = getattr(model, "needs_prediction_state", None)
+    if needs is None or not needs():
+        return
+    was_training = model.training
+    model.eval()
+    try:
+        model.reset_prediction_state()
+        for start in range(0, len(train), batch_size):
+            batch = train.slice(slice(start, start + batch_size))
+            model.update_prediction_state(batch.x_num, batch.x_cat, batch.weight)
+        model.finalize_prediction_state()
+    finally:
+        model.train(was_training)
 
 
 class Trainer:
@@ -606,6 +632,9 @@ class Trainer:
 
         first_step = True
         for epoch in range(config.n_epochs):
+            if hasattr(model, "set_training_epoch"):
+                model.set_training_epoch(epoch)
+            _prepare_prediction_state(model, train, config.eval_batch_size)
             run_model.train()
             epoch_loss = torch.zeros((), device=device)
             unflushed_steps = 0
@@ -682,6 +711,8 @@ class Trainer:
             # Evaluate (and pick the best checkpoint) on the EMA parameters
             # when enabled, then restore the live weights for the next epoch.
             saved_params = _swap_in_params(model, ema_params) if ema_params is not None else None
+            if eval_sets:
+                _prepare_prediction_state(model, train, config.eval_batch_size)
 
             for es in eval_sets:
                 pred = predict_transformed(
@@ -750,4 +781,5 @@ class Trainer:
         elif ema_params is not None:
             # No early stopping: the final weights are the EMA parameters.
             _swap_in_params(model, ema_params)
+        _prepare_prediction_state(model, train, config.eval_batch_size)
         return result

@@ -9,6 +9,11 @@
   constant and concatenated controls and per-row weight inspection.
 - Preprocessing: `numeric_passthrough_cols` preserves selected numeric units
   through scaling and save/load, for common-scale estimator mixtures.
+- Add `profiled_realmlp`: jointly adjusted source towers with a repeatedly
+  training-projected dense remainder, unprojected/frozen controls, serialized
+  projection state, and training-only EMA-aware projection refreshes.
+- Profiled RealMLP: `arbitration` now routes one shared reliability gate into
+  post-arbitration source towers and the full reduced remainder frame.
 
 ## 0.14.0 (2026-09-07)
 
