@@ -585,3 +585,23 @@ def test_realmlp_tower_groups_xla(tmp_path):
     model.save_model(tmp_path / "towers")
     after = MasaClassifier.load_model(tmp_path / "towers").predict_proba(x)
     np.testing.assert_allclose(before, after, atol=1e-6)
+
+
+def test_realmlp_reliability_arbitration_xla(tmp_path):
+    import pandas as pd
+
+    from masamlp.classifier import MasaClassifier
+
+    x = pd.DataFrame(np.random.default_rng(68).normal(size=(32, 6)), columns=list('abcdef'))
+    y = (x.a + x.b > 0).astype(int)
+    model = MasaClassifier(model='realmlp', numeric_scaler='rssc',
+                           numeric_passthrough_cols=['a', 'b', 'c', 'd'],
+                           num_embedding='pbld', model_params={
+        'arbitration': {'estimator_idx': [0, 1], 'reliability_idx': [2, 3]},
+        'hidden_sizes': [4], 'd_num_embedding': 3, 'n_frequencies': 3,
+    }, n_epochs=2, batch_size=16, device='xla', amp=False, ema_decay=.9).fit(x, y)
+    before = model.predict_proba(x)
+    assert before.shape == (32, 2) and np.isfinite(before).all()
+    model.save_model(tmp_path / 'arbitration')
+    after = MasaClassifier.load_model(tmp_path / 'arbitration').predict_proba(x)
+    np.testing.assert_allclose(before, after, atol=1e-6)

@@ -26,6 +26,7 @@ from collections.abc import Callable
 
 from torch import nn
 
+from masamlp.models.arbitration import arbitration_layout
 from masamlp.models.auxiliary import AuxiliaryOrdinalNet
 from masamlp.models.base import (
     FeatureEmbedding,
@@ -166,6 +167,15 @@ def build_model(
             **embed_kwargs,
         }
         return builder(embedding_config=config, out_dim=out_dim, **params)
+    if name == "realmlp" and params.get("arbitration") is not None:
+        options = dict(params["arbitration"])
+        if "n_inputs" in options:
+            raise ValueError("arbitration n_inputs is inferred by build_model; omit it")
+        if any(k in embed_kwargs for k in ("num_embedding_idx", "num_input_chunks", "ple_bins")):
+            raise ValueError("arbitration does not support numeric subset routing or PLE bins")
+        _, reduced_width = arbitration_layout(n_num, **options)
+        params["arbitration"] = {**options, "n_inputs": n_num}
+        n_num = reduced_width
     embedding = FeatureEmbedding(
         n_num, cat_cardinalities, num_embedding=num_embedding, **embed_kwargs
     )

@@ -42,6 +42,7 @@ import torch
 from torch import Tensor, nn
 
 from masamlp.core.trainer import flat_cos
+from masamlp.models.arbitration import ReliabilityGate
 from masamlp.models.base import FeatureEmbedding, _resolve_column_idx
 from masamlp.models.layers import ScalingLayer
 
@@ -277,6 +278,7 @@ class RealMLPNet(nn.Module):
         linear_skip_lr_factor: float = 1.0,
         first_layer_groups: list[list[int]] | None = None,
         tower_groups: list[list[int]] | None = None,
+        arbitration: dict | None = None,
     ) -> None:
         super().__init__()
         if activation not in _ACTIVATIONS:
@@ -299,6 +301,9 @@ class RealMLPNet(nn.Module):
                 tower_groups, embedding.feature_chunk_sizes, "tower_groups"
             )
         self.embedding = embedding
+        self.arbitration = ReliabilityGate(**arbitration) if arbitration is not None else None
+        if self.arbitration is not None and embedding.n_num != self.arbitration.output_width:
+            raise ValueError("arbitration requires the reduced embedding built by build_model")
         self.dropout_schedule = dropout_schedule
         self.act_lr_factor = act_lr_factor
         self.plr_lr_factor = plr_lr_factor
@@ -391,6 +396,8 @@ class RealMLPNet(nn.Module):
                     module.set_factor(factor)
 
     def forward(self, x_num: Tensor, x_cat: Tensor) -> Tensor:
+        if self.arbitration is not None:
+            x_num = self.arbitration(x_num)
         h = self.embedding(x_num, x_cat)
         if self.front_scale is not None:
             h = self.front_scale(h)
@@ -425,6 +432,8 @@ class RealMLPNet(nn.Module):
             return
         was_training = self.training
         self.eval()                      # dropout must be identity during the walk
+        if self.arbitration is not None:
+            x_num = self.arbitration(x_num)
         h = self.embedding(x_num, x_cat)
         if self.front_scale is not None:
             h = self.front_scale(h)
@@ -491,8 +500,9 @@ class RealMLPNet(nn.Module):
         skip = [self.skip_weight, self.skip_bias] if self.skip_weight is not None else []
         first_w = [m.weight for m in first]
         first_b = [m.bias for m in first]
+        gate = list(self.arbitration.parameters()) if self.arbitration is not None else []
         assigned = {
-            id(p) for p in weights + biases + scale + act + plr + skip + first_w + first_b
+            id(p) for p in weights + biases + scale + act + plr + skip + first_w + first_b + gate
         }
         other = [p for p in self.parameters() if p.requires_grad and id(p) not in assigned]
         ff = self.first_layer_lr_factor
@@ -519,6 +529,7 @@ class RealMLPNet(nn.Module):
             {"params": act, "lr_factor": self.act_lr_factor},
             {"params": plr, "lr_factor": self.plr_lr_factor},
             {"params": skip, "lr_factor": self.linear_skip_lr_factor, "wd_factor": 0.0},
+            {"params": gate, "lr_factor": 1.0, "wd_factor": 0.0},
             {"params": other, "lr_factor": 1.0},
         ]
         return [g for g in groups if g["params"]]

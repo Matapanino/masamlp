@@ -636,3 +636,35 @@ no causal claim or competition gain is implied. Vectorized outer ensembles are
 unsupported under the WP2 hook contract. Auxiliary-only pretraining can use the
 ordinary Trainer with a zero primary objective, then a fresh binary Trainer over
 the same module with `auxiliary_weight=0`; optimizer state is reset between stages.
+
+
+### RealMLP estimator arbitration
+
+`numeric_passthrough_cols` (estimator option, default `None`) names numeric
+columns that keep their imputed original units through preprocessing. Other
+columns retain `numeric_scaler`. Names must be unique, nonempty and numeric.
+The choice and fitted indices survive save/load; old models default to no pass-through.
+
+`arbitration` (RealMLP `model_params`, default `None`) enables learned convex
+mixtures before the numeric embedding. Its dictionary requires `estimator_idx`
+and `reliability_idx`: disjoint nonempty lists of positions in the **preprocessed
+numeric block**, including one-hot coordinates if desired. All estimates must
+share units; pass logit columns through with `numeric_passthrough_cols` when
+mixing probabilities on the logit scale. Reliability is removed from the trunk.
+Other numeric coordinates retain their order, followed by the mixtures; categorical
+embeddings retain their usual placement. Optional dictionary keys:
+
+- `n_heads=2`: number of independently learned mixtures.
+- `hidden_size=32`: width of the tanh conditioner over estimates and reliability.
+- `mode="conditional"`: per-row softmax weights; `"constant"` learns a row-independent
+  softmax per head, exactly a convex linear map of the estimates.
+- `keep_estimators=False`: replace estimates; `True` keeps them and appends mixtures.
+
+Gate parameters use learning-rate factor 1 and no weight decay. The gate is a
+pure torch module, with no fitting, label or device logic. `net.arbitration.weights(x_num)`
+returns `(rows, heads, estimates)` for diagnostics. `mix(x_num)` returns the mixtures.
+Construct through `build_model` or an estimator so the embedding width is adjusted;
+`n_inputs` is filled internally and is not a user option. `num_embedding_cols` and
+PLE are not supported together with arbitration. Group routing and linear skips,
+if supplied, address the **reduced** numeric/embedding coordinates.
+`arbitration=None` preserves the existing initialization and forward path.
