@@ -18,12 +18,14 @@ Sklearn dispatch and shared serialization are a separate follow-up.
 | `kernel` | `"laplace"` | `exp(-distance/L)`; `"gaussian"` uses `exp(-distance²/(2L²))`. Distance is Euclidean. |
 | `bandwidth` | `"median"` | Positive float or median unordered pairwise distance on a seeded sample of up to 4,096 fitting rows. A zero median uses 1.0. |
 | `bandwidth_scale` | `1.0` | Positive multiplier applied to either bandwidth choice. |
-| `random_state` | `0` | Nonnegative integer; one local NumPy generator drives sampling and pivots, without changing global RNG state. |
+| `random_state` | `0` | Nonnegative seed; local NumPy generators leave global RNG state unchanged. Uniform uses a fresh seeded permutation independent of bandwidth sampling. |
 | `device` | `"cpu"` | `"cpu"` or `"cuda"` (also an explicit CUDA index); MPS/XLA are unsupported. |
 | `dtype` | `"float32"` | Kernel precision; `"float64"` enables parity. Accumulation and solve stay FP64. |
 | `block_rows` | `16384` | Training workspace row budget, integer ≥5; internal microblocks reserve FP64 operand space. |
 | `predict_batch_rows` | `16384` | Inference workspace row budget, integer ≥5. |
 | `dense` | `False` | Exact FP64 reference, restricted to at most 5,000 input rows; ignores `r`. |
+| `landmark_method` | `"rpcholesky"` | `"rpcholesky"` single-pass projection or `"uniform"` seeded permutation; both support nested prefixes. |
+| `max_factor_bytes` | `16 * 1024**3` (16 GiB) | Nonnegative integer budget for the RPCholesky FP32 factor alone. Oversized factors raise an error recommending `"uniform"`. |
 
 `fit(X, t, sample_weight=None)` removes zero-weight rows before bandwidth
 estimation and landmark selection; weights must be finite, nonnegative and
@@ -36,7 +38,7 @@ Compare full-rank Nyström coefficients in input-row order using
 `model.alpha_[np.argsort(model.landmark_indices_)]`; dense centres use input order.
 
 Cholesky runs in place. A failed factorization rebuilds the streamed system,
-then retries at most three times with cumulative diagonal jitter
+then retries at most three times with diagonal jitter on a freshly rebuilt system:
 `attempt * 1e-10 * trace(system)/r`. Final fallback is `eigh` with eigenvalues
 clipped below `1e-10 * trace(system)/r`. `solver_path_` records `cholesky`,
 `cholesky+jitter1/2/3`, or `eigh`.
@@ -44,14 +46,25 @@ clipped below `1e-10 * trace(system)/r`. `solver_path_` records `cholesky`,
 ## Nested landmarks and rank curves
 
 `rpcholesky_landmarks(X, r_max, random_state=0, block=16384, *,
-kernel="laplace", bandwidth="median", bandwidth_scale=1.0, device="cpu")`
-returns distinct ordered row indices sampled proportionally to the residual
-kernel diagonal. It uses FP64. Exhausted numerical rank completes the
-sequence with a seeded permutation of remaining indices. Run it once at the
-largest rank and use prefixes; independently re-sampling is not a rank curve.
+kernel="laplace", bandwidth="median", bandwidth_scale=1.0, device="cpu",
+max_factor_bytes=16 * 1024**3)` returns distinct ordered row indices sampled
+proportionally to the residual kernel diagonal. The single-pass algorithm
+computes each new column once as `K[:, pivot] - F[:, :k] @ F[pivot, :k].T`,
+then normalizes it and stores it in the on-device FP32 factor F. Kernels and
+the residual diagonal use FP64; projection uses FP32. The diagonal stays on
+device with one host copy per pivot for the seeded NumPy sampler. Exhausted
+numerical rank completes the sequence with a seeded permutation of remaining
+indices. Run once at the largest rank and use prefixes.
+
+`landmark_method="uniform"` selects the first r indices of ONE permutation,
+`np.random.default_rng(random_state).permutation(n)`, of the positive-weight
+rows. It is independent of bandwidth sampling, deterministic and nested by
+prefix, with no kernel/projection work. Creating the permutation is O(n) time
+and memory; taking a prefix view is O(1). It has no n-by-r factor allocation.
 
 `rank_curve(X, t, w=None, ranks=(1000, 2000, 4000, 8000), *, X_val,
-random_state=0, **params)` does that single run and a fresh solve for each
+random_state=0, landmark_method="rpcholesky", max_factor_bytes=16 * 1024**3,
+**params)` does that single landmark run and a fresh solve for each
 prefix. It returns dictionaries containing `rank`, `requested_rank`, `model`,
 `predictions`, `train_residual_norm`, `solver_path`, `wall_seconds`,
 `landmark_seconds` and `peak_device_memory`. The norm is `sqrt(sum(w*(f-t)²))`.
@@ -65,12 +78,26 @@ it is not a theorem for every regularized target.
 ## Weighted-logit residual and exact fallback
 
 `LinearResidualKRR(parent="logit", gamma_grid=(0, 0.125, 0.25, 0.5, 1.0),
-w_min=1e-4, clip_correction=4.0, **params)` forwards `params` to `NystromKRR`.
+w_min=1e-4, clip_correction=4.0, landmark_method="rpcholesky",
+max_factor_bytes=16 * 1024**3, **params)` forwards solver options to `NystromKRR`.
 Supply `fit(X, y, eta0=parent_logits)` for `parent="logit"`, or
 `fit(X, y, p0=parent_probabilities)` for `parent="proba"`, with optional
 `sample_weight`. Labels must be binary. It fits the literal working target
 `w = max(p0*(1-p0), w_min) * sample_weight`, `z = (y-p0)/w`; zero-weight
 rows have unused `z=0`. Sample weights enter **both** w and z's denominator.
+With `sample_weight=None` (frozen for stage 2 and stage 3), this is the
+**one-step Newton / IRLS working-response objective**
+`sum(w_i * (z_i - f(x_i))²) + reg * ||f||_K²` for an additive logistic
+correction at the supplied parent. The closed form is
+`(K_nm.T W K_nm + reg K_mm) alpha = K_nm.T (y-p0)`.
+It equals the Newton step of summed logistic loss plus `reg/2 * ||f||_K²`
+when the curvature floor is inactive; `w_min` stabilizes the Hessian otherwise.
+High-curvature rows have smaller working targets/steps by design.
+
+`sample_weight` multiplies w as the external row-importance multiplier.
+Under the preserved convention it also divides z, so positive multipliers
+change the curvature without scaling the logistic gradient. Thus nonuniform
+weights do **not** give the usual importance-weighted logistic Newton step.
 Consequently the weight/ridge scaling identity above applies to KRR with
 fixed targets, not to refitting this head after changing its working targets.
 
@@ -104,11 +131,17 @@ O((b+r)*d) feature tensors, and backend BLAS/eigensolver workspace/allocator
 overhead. The FP64 kernel path uses the same training budget and an
 `8*predict_batch_rows*r` inference bound. No full cross-kernel is stored.
 
-RPCholesky stores an n-by-r factor only when `n <= block/4`, fitting within
-the fixed block budget. Larger n uses an r-by-r pivot factor and recomputes
-blocked projections, with O(n) residual diagonal storage. This avoids hidden
-O(n*r) storage but adds compute. Median bandwidth uses at most 4,096 rows and
-8,386,560 FP64 pair distances in its separate phase.
+The separate RPCholesky landmark phase stores an **n-by-r FP32 factor**:
+`n * r * 4 B <= max_factor_bytes` is checked before bandwidth or allocation.
+The default is 16 GiB, excluding O(n) diagonal/host sampling vectors, on-device
+FP64 features, per-block columns and backend workspace. A factor that exceeds
+the budget raises a clear error recommending `landmark_method="uniform"`;
+there is no recomputing fallback. The solve above starts after that factor is
+released, so peak memory is the maximum of the two phases plus their respective
+overhead. RPCholesky now evaluates O(n*r) kernel entries and performs O(n*r²)
+projection arithmetic. Uniform uses O(n) permutation storage instead.
+Median bandwidth uses at most 4,096 rows and 8,386,560 FP64 pair distances in
+its separate phase.
 
 CPU FP64 same-input/same-seed indices and coefficients are bitwise repeatable
 within the same Torch/BLAS environment. The CUDA FP32 acceptance tolerance is

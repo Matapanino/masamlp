@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add uniform prefix landmarks and a single-pass RPCholesky FP32 device factor
+  with a 16 GiB default budget and one host diagonal copy per pivot.
+- Clarify the logistic Newton working-response objective and fresh-system
+  jitter retries; retain the existing external-weight convention.
+
 - Add standalone global Nyström KRR with blocked FP64 accumulation, nested
   randomized Cholesky landmarks, dense parity reference and NumPy archives.
 - Add a weighted-logit residual head with validation-only gamma selection

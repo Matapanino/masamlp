@@ -36,7 +36,8 @@ class LinearResidualKRR:
 
     def __init__(
         self, parent="logit", gamma_grid=(0, 0.125, 0.25, 0.5, 1.0), w_min=1e-4,
-        clip_correction=4.0, **params,
+        clip_correction=4.0, landmark_method="rpcholesky", max_factor_bytes=16 * 1024**3,
+        **params,
     ):
         if parent not in ("logit", "proba"):
             raise ValueError("parent must be logit or proba")
@@ -50,15 +51,23 @@ class LinearResidualKRR:
         self.gamma_grid = tuple(sorted(set(gamma_grid)))
         self.w_min = float(w_min)
         self.clip_correction = float(clip_correction)
-        self.params = NystromKRR(**params)._params()
+        self.params = NystromKRR(landmark_method=landmark_method,
+                                 max_factor_bytes=max_factor_bytes, **params)._params()
         self.gamma_ = 0.0
 
     def fit(self, X, y, *, eta0=None, p0=None, sample_weight=None):
         """Fit z=(y-p0)/w with w=max(p0(1-p0), w_min)*sample_weight.
 
+        With sample_weight=None this minimizes sum(w*(z-f(X))**2) +
+        reg*||f||_K**2: the one-step Newton/IRLS working-response objective
+        for a logistic additive correction (curvature stabilized by w_min).
+        High-curvature rows take smaller working steps by design.
+
+        sample_weight multiplies w (the external row-importance multiplier)
+        and is None in stage 2. The existing convention also puts it in z's
+        denominator: it scales curvature, not the logistic gradient. This is
+        not an importance-weighted logistic Newton step when weights vary.
         Zero-weight rows receive z=0 and are omitted by the kernel solver.
-        This is the literal working-target convention: sample weights enter
-        both w and z's denominator, not just the loss weighting.
         """
         y = _labels(y, len(X))
         if self.parent == "logit":

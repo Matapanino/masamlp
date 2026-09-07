@@ -1,4 +1,4 @@
-"""Randomly pivoted Cholesky, with bounded workspace for large row counts."""
+"""Nested landmark sequences with an explicit on-device factor budget."""
 
 import warnings
 
@@ -15,7 +15,7 @@ from .kernels import (
 )
 
 
-def rpcholesky_landmarks(
+def _rpcholesky_landmarks_reference(
     X, r_max, random_state=0, block=16384, *, kernel="laplace", bandwidth="median",
     bandwidth_scale=1.0, device="cpu",
 ):
@@ -83,4 +83,73 @@ def rpcholesky_landmarks(
             diagonal[start:stop] -= column.square().cpu().numpy()
         np.maximum(diagonal, 0, out=diagonal)
         diagonal[~available] = 0
+    return indices
+
+
+def _uniform_landmarks(X, r_max, random_state):
+    """One O(n) seeded permutation; all rank choices are prefix slices."""
+    _integer(r_max, "r_max")
+    if r_max > len(X):
+        warnings.warn("rank clipped to the number of rows", UserWarning, stacklevel=2)
+    return np.random.default_rng(random_state).permutation(len(X))[:min(r_max, len(X))]
+
+
+def rpcholesky_landmarks(
+    X, r_max, random_state=0, block=16384, *, kernel="laplace", bandwidth="median",
+    bandwidth_scale=1.0, device="cpu", max_factor_bytes=16 * 1024**3,
+):
+    """Sample distinct pivots from the residual diagonal, using prefix nesting.
+
+    Standard single-pass Cholesky: each kernel column is evaluated once and
+    projected against the stored n-by-r FP32 factor on ``device``. The residual
+    diagonal stays on device in FP64, with one host copy per pivot for NumPy's
+    seeded sampler. ``max_factor_bytes`` defaults to 16 GiB and bounds the
+    factor alone, excluding features, diagonal and backend workspace. If it
+    does not fit, use ``landmark_method="uniform"`` in the estimator/rank curve.
+    """
+    X = _matrix(X)
+    _integer(r_max, "r_max")
+    _integer(block, "block", 5)
+    _integer(max_factor_bytes, "max_factor_bytes", 0)
+    _check_kernel(kernel)
+    device, _ = _torch_options(device, "float64")
+    if r_max > len(X):
+        warnings.warn("rank clipped to the number of rows", UserWarning, stacklevel=2)
+    rank = min(r_max, len(X))
+    required = len(X) * rank * 4
+    if required > max_factor_bytes:
+        raise ValueError(
+            f"RPCholesky factor requires {required} bytes, exceeding "
+            f"max_factor_bytes={max_factor_bytes}; use landmark_method='uniform'."
+        )
+    rng = np.random.default_rng(random_state)
+    bandwidth = _resolve_bandwidth(X, bandwidth, bandwidth_scale, rng)
+    features = torch.as_tensor(np.ascontiguousarray(X), dtype=torch.float64, device=device)
+    factor = torch.empty((rank, len(X)), dtype=torch.float32, device=device).T
+    diagonal = torch.ones(len(X), dtype=torch.float64, device=device)
+    available = np.ones(len(X), dtype=bool)
+    indices = np.empty(rank, dtype=np.int64)
+    rows = max(1, block // 5)
+    for j in range(rank):
+        host_diagonal = diagonal.cpu().numpy()
+        total = host_diagonal.sum()
+        if total <= np.finfo(np.float64).eps * len(X):
+            indices[j:] = rng.permutation(np.flatnonzero(available))[:rank - j]
+            break
+        pivot = int(rng.choice(len(X), p=host_diagonal / total))
+        indices[j] = pivot
+        available[pivot] = False
+        root = float(np.sqrt(host_diagonal[pivot]))
+        previous = factor[pivot, :j].clone()
+        for start in range(0, len(X), rows):
+            stop = min(start + rows, len(X))
+            column = _kernel(features[start:stop], features[pivot:pivot + 1],
+                             bandwidth, kernel)[:, 0]
+            if j:
+                column.sub_(factor[start:stop, :j] @ previous)
+            column.div_(root)
+            factor[start:stop, j].copy_(column)
+            diagonal[start:stop].sub_(column.square())
+        diagonal.clamp_(min=0)
+        diagonal[pivot] = 0
     return indices

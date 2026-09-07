@@ -211,3 +211,108 @@ def test_bandwidth_and_streamed_kernel_workspace(monkeypatch):
                        bandwidth_scale=1.25, dtype="float64").fit(X, t, w)
     assert model.bandwidth_ == pytest.approx(expected, rel=1e-14)
     assert shapes and all(rows <= 10 and columns == 17 for rows, columns in shapes)
+
+
+@pytest.mark.parametrize("kernel,rank,block", [("laplace", 2000, 16384),
+                                                ("gaussian", 256, 1000)])
+def test_single_pass_matches_previous_pivots_on_2000_rows(kernel, rank, block):
+    from masamlp.solvers.landmarks import _rpcholesky_landmarks_reference
+
+    X, _, _ = data(2000, 12)
+    expected = _rpcholesky_landmarks_reference(X, rank, 42, block=block,
+                                              bandwidth=2.5, kernel=kernel)
+    actual = rpcholesky_landmarks(X, rank, 42, block=block, bandwidth=2.5, kernel=kernel)
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(actual[:128], rpcholesky_landmarks(
+        X, 128, 42, block=1000, bandwidth=2.5, kernel=kernel))
+
+
+def test_single_pass_kernel_entries_and_factor_budget(monkeypatch):
+    import masamlp.solvers.landmarks as module
+
+    X, t, _ = data(100)
+    original = module._kernel
+    entries = []
+
+    def observed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        entries.append(result.numel())
+        assert result.shape[1] == 1  # no old projection kernel is recomputed
+        return result
+
+    copies = []
+    allocations = []
+    original_cpu = torch.Tensor.cpu
+    original_empty = torch.empty
+
+    def host_copy(tensor, *args, **kwargs):
+        copies.append(tuple(tensor.shape))
+        return original_cpu(tensor, *args, **kwargs)
+
+    def allocated(*args, **kwargs):
+        result = original_empty(*args, **kwargs)
+        allocations.append((tuple(result.shape), result.dtype, result.device.type))
+        return result
+
+    monkeypatch.setattr(module, "_kernel", observed)
+    monkeypatch.setattr(torch.Tensor, "cpu", host_copy)
+    monkeypatch.setattr(torch, "empty", allocated)
+    rpcholesky_landmarks(X, 30, bandwidth=2, block=35, max_factor_bytes=100 * 30 * 4)
+    assert sum(entries) == 100 * 30
+    assert copies == [(100,)] * 30  # one diagonal host copy per pivot, not per block
+    assert ((30, 100), torch.float32, "cpu") in allocations
+    entries.clear()
+    with pytest.raises(ValueError, match="landmark_method='uniform'"):
+        rpcholesky_landmarks(X, 30, max_factor_bytes=100 * 30 * 4 - 1)
+    assert not entries
+    NystromKRR(r=30, landmark_method="uniform", max_factor_bytes=0).fit(X, t)
+
+
+def test_uniform_prefix_determinism_and_roundtrip(tmp_path, monkeypatch):
+    import masamlp.solvers.nystrom_krr as module
+
+    X, t, w = data(180)
+    w[::7] = 0
+    active = np.flatnonzero(w > 0)
+    expected = active[np.random.default_rng(42).permutation(len(active))]
+    original = module._uniform_landmarks
+    calls = []
+
+    def observed(*args):
+        result = original(*args)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(module, "_uniform_landmarks", observed)
+    params = dict(landmark_method="uniform", max_factor_bytes=0, dtype="float64")
+    curve = rank_curve(X, t, w, ranks=(20, 40, 80), X_val=X[:10], random_state=42, **params)
+    assert len(calls) == 1
+    for row in curve:
+        model = row["model"]
+        np.testing.assert_array_equal(model.landmark_indices_, expected[:row["rank"]])
+        # A separate fit's bandwidth sampling must not perturb the permutation.
+        repeated = NystromKRR(r=row["rank"], random_state=42, **params).fit(X, t, w)
+        np.testing.assert_array_equal(repeated.landmark_indices_, model.landmark_indices_)
+        np.testing.assert_array_equal(X[model.landmark_indices_], model.landmarks_)
+    path = tmp_path / "uniform.npz"
+    repeated.save(path)
+    loaded = NystromKRR.load(path)
+    assert loaded.landmark_method == "uniform"
+    assert loaded.max_factor_bytes == 0
+    np.testing.assert_array_equal(loaded.predict(X), repeated.predict(X))
+    with pytest.raises(ValueError, match="landmark_method"):
+        NystromKRR(landmark_method="unknown")
+
+
+def test_solver_parameters_documented():
+    import inspect
+    from pathlib import Path
+
+    from masamlp.solvers import LinearResidualKRR
+
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "parameters.md").read_text()
+    for obj in (NystromKRR, LinearResidualKRR, rank_curve, rpcholesky_landmarks):
+        for name, param in inspect.signature(obj).parameters.items():
+            if param.default is inspect.Parameter.empty or param.kind == param.VAR_KEYWORD:
+                continue
+            assert f"`{name}`" in doc, (obj.__name__, name)

@@ -18,7 +18,7 @@ from .kernels import (
     _vector,
     _weights,
 )
-from .landmarks import rpcholesky_landmarks
+from .landmarks import _uniform_landmarks, rpcholesky_landmarks
 
 
 class NystromKRR:
@@ -33,7 +33,8 @@ class NystromKRR:
     def __init__(
         self, r=1000, reg=1.0, kernel="laplace", bandwidth="median", bandwidth_scale=1.0,
         random_state=0, device="cpu", dtype="float32", block_rows=16384,
-        predict_batch_rows=16384, dense=False,
+        predict_batch_rows=16384, dense=False, landmark_method="rpcholesky",
+        max_factor_bytes=16 * 1024**3,
     ):
         _integer(r, "r")
         _integer(block_rows, "block_rows", 5)
@@ -47,6 +48,11 @@ class NystromKRR:
             _positive(bandwidth, "bandwidth")
         if not isinstance(dense, bool):
             raise ValueError("dense must be bool")
+        if landmark_method not in ("uniform", "rpcholesky"):
+            raise ValueError("landmark_method must be uniform or rpcholesky")
+        _integer(max_factor_bytes, "max_factor_bytes", 0)
+        self.landmark_method = landmark_method
+        self.max_factor_bytes = int(max_factor_bytes)
         self.r = int(r)
         self.reg = float(reg)
         self.kernel = kernel
@@ -63,6 +69,7 @@ class NystromKRR:
         return {key: getattr(self, key) for key in (
             "r", "reg", "kernel", "bandwidth", "bandwidth_scale", "random_state", "device",
             "dtype", "block_rows", "predict_batch_rows", "dense",
+            "landmark_method", "max_factor_bytes",
         )}
 
     def fit(self, X, t, sample_weight=None):
@@ -81,10 +88,12 @@ class NystromKRR:
         bandwidth = _resolve_bandwidth(X, self.bandwidth, self.bandwidth_scale, rng)
         if self.dense:
             indices = np.arange(len(X))
+        elif self.landmark_method == "uniform":
+            indices = _uniform_landmarks(X, self.r, self.random_state)
         else:
             indices = rpcholesky_landmarks(
                 X, self.r, rng, block=self.block_rows, kernel=self.kernel,
-                bandwidth=bandwidth, device=self.device,
+                bandwidth=bandwidth, device=self.device, max_factor_bytes=self.max_factor_bytes,
             )
         self._fit_centres(X, t, w, indices, bandwidth)
         self.landmark_indices_ = active[indices]
@@ -246,7 +255,8 @@ class NystromKRR:
             return cls._from_state(state, device=device)
 
 
-def rank_curve(X, t, w=None, ranks=(1000, 2000, 4000, 8000), *, X_val, random_state=0, **params):
+def rank_curve(X, t, w=None, ranks=(1000, 2000, 4000, 8000), *, X_val, random_state=0,
+               landmark_method="rpcholesky", max_factor_bytes=16 * 1024**3, **params):
     """One landmark run, then fresh prefix solves and caller-validation predictions.
 
     Returns one dict per requested rank with the model, predictions, rank,
@@ -265,14 +275,18 @@ def rank_curve(X, t, w=None, ranks=(1000, 2000, 4000, 8000), *, X_val, random_st
         _integer(rank, "rank")
     if "r" in params or params.get("dense", False):
         raise ValueError("rank_curve requires prefix ranks and dense=False")
+    params = dict(params, landmark_method=landmark_method, max_factor_bytes=max_factor_bytes)
     prototype = NystromKRR(r=max(ranks), random_state=random_state, **params)
     rng = np.random.default_rng(random_state)
     start = time.perf_counter()
     prototype._start_memory()
     bandwidth = _resolve_bandwidth(X, prototype.bandwidth, prototype.bandwidth_scale, rng)
-    indices = rpcholesky_landmarks(X, max(ranks), rng, block=prototype.block_rows,
-                                   kernel=prototype.kernel, bandwidth=bandwidth,
-                                   device=prototype.device)
+    if landmark_method == "uniform":
+        indices = _uniform_landmarks(X, max(ranks), random_state)
+    else:
+        indices = rpcholesky_landmarks(X, max(ranks), rng, block=prototype.block_rows,
+                                      kernel=prototype.kernel, bandwidth=bandwidth,
+                                      device=prototype.device, max_factor_bytes=max_factor_bytes)
     landmark_seconds = time.perf_counter() - start
     landmark_peak = None
     if torch.device(prototype.device).type == "cuda":

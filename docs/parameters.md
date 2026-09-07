@@ -636,3 +636,37 @@ no causal claim or competition gain is implied. Vectorized outer ensembles are
 unsupported under the WP2 hook contract. Auxiliary-only pretraining can use the
 ordinary Trainer with a zero primary objective, then a fresh binary Trainer over
 the same module with `auxiliary_weight=0`; optimizer state is reset between stages.
+
+
+## Solvers
+
+Standalone solvers are documented with their equations and memory bounds in
+[solvers.md](solvers.md). `NystromKRR` accepts `r` (1000), `reg` (1.0),
+`kernel` ("laplace" or "gaussian"), `bandwidth` ("median" or a positive float),
+`bandwidth_scale` (1.0), `random_state` (0), `device` ("cpu" or "cuda"),
+`dtype` ("float32" or "float64"), `block_rows` (16384),
+`predict_batch_rows` (16384), and `dense` (False; at most 5000 raw rows).
+Accumulation and solves use FP64; no preprocessing is performed.
+
+- `landmark_method` ("rpcholesky"): single-pass RPCholesky with an on-device
+  FP32 n-by-r factor, or "uniform", the first r indices of one permutation
+  seeded directly by `random_state`. Prefixes are nested and deterministic;
+  permutation creation costs O(n), prefix slicing O(1), with no kernel work.
+- `max_factor_bytes` (16 * 1024**3, 16 GiB): nonnegative integer budget for the
+  RPCholesky factor alone (`n*r*4` bytes). If exceeded, raises an error
+  recommending "uniform". Features, residual diagonal and backend workspace
+  are additional memory. The diagonal stays on device with one host copy per
+  pivot; old projection columns are never recomputed.
+
+`LinearResidualKRR` accepts both landmark options and forwards other solver
+options. Its `parent` ("logit" or "proba"), `gamma_grid` ((0, 0.125, 0.25, 0.5, 1.0)),
+`w_min` (1e-4) and `clip_correction` (4.0) control the Newton/IRLS working
+response and clipping. `sample_weight` (None in stage 2 and stage 3) multiplies
+curvature w and also enters z's denominator under the existing convention;
+see the distinction from importance-weighted logistic Newton in solvers.md.
+
+`rank_curve` accepts `w` (None), `ranks` ((1000, 2000, 4000, 8000)),
+`random_state` and both landmark options, then solves each prefix of ONE
+sequence. `rpcholesky_landmarks` accepts `r_max`, `random_state`, `block`
+(16384), `kernel`, `bandwidth`, `bandwidth_scale`, `device`, and
+`max_factor_bytes` with the defaults above.

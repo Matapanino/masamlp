@@ -169,3 +169,25 @@ def test_residual_validation():
         LinearResidualKRR().fit(X, y + 0.1, eta0=eta)
     with pytest.raises(ValueError):
         LinearResidualKRR(parent="proba").fit(X, y, p0=np.full(len(X), 1.1))
+
+
+def test_correction_is_logistic_newton_step():
+    # Independent gradient/Hessian of summed logistic loss + reg/2 * RKHS norm
+    # at the zero additive correction. No curvature floor or clipping is active.
+    X, eta, y = example()
+    head = LinearResidualKRR(r=25, reg=0.7, bandwidth=1.5, dtype="float64",
+                             landmark_method="uniform", clip_correction=np.inf)
+    head.fit(X, y, eta0=eta, sample_weight=None)
+    Z = head.solver_.landmarks_
+    K = np.exp(-np.linalg.norm(X[:, None] - Z[None, :], axis=2) / 1.5)
+    Kmm = np.exp(-np.linalg.norm(Z[:, None] - Z[None, :], axis=2) / 1.5)
+    p = sigmoid(eta)
+    curvature = p * (1 - p)
+    assert curvature.min() > head.w_min
+    gradient = K.T @ (p - y)
+    hessian = K.T @ (curvature[:, None] * K) + 0.7 * Kmm
+    newton = np.linalg.solve(hessian, -gradient)
+    np.testing.assert_allclose(head.solver_.alpha_, newton, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(head.correction(X), K @ newton, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(head.predict_logit(X, eta, gamma=1), eta + K @ newton,
+                               rtol=1e-10, atol=1e-10)
