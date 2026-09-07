@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 
 import numpy as np
 import pytest
@@ -49,6 +50,28 @@ def _group_hash(model):
             ).encode()
         ]
     )
+
+
+def _parameter_inventory(model):
+    return [(name, tuple(param.shape)) for name, param in model.named_parameters()]
+
+
+def _optimizer_inventory(model):
+    names = {id(param): name for name, param in model.named_parameters()}
+    return [
+        (
+            group.get("lr_factor", 1.0),
+            group.get("wd_factor", 1.0),
+            [names[id(param)] for param in group["params"]],
+        )
+        for group in model.param_groups()
+    ]
+
+
+def _assert_equal_state_dicts(left, right):
+    assert left.state_dict().keys() == right.state_dict().keys()
+    for name, value in left.state_dict().items():
+        assert torch.equal(value, right.state_dict()[name]), name
 
 
 def _combined(groups, *, cat_cardinalities=None, num_embedding=None, chunks=None):
@@ -127,9 +150,86 @@ def test_post_arbitration_chunk_map_coalesces_embedded_numeric_coordinates():
     assert [tower.trunk[0].in_features for tower in model.towers] == [48, 16]
 
 
+def test_tower_groups_off_has_legacy_inventory_and_deterministic_gate_only_path():
+    """The feature-off path retains the dense RealMLP construction contract."""
+    params = {
+        "arbitration": GATE,
+        "tower_groups": None,
+        "hidden_sizes": [5, 3],
+        "zero_init_output": False,
+    }
+    expected_parameters = [
+        ("embedding.num_embedding.frequencies", (4, 16)),
+        ("embedding.num_embedding.cos_bias_param", (4, 16)),
+        ("embedding.num_embedding.weight", (4, 16, 15)),
+        ("embedding.num_embedding.bias", (4, 15)),
+        ("arbitration.conditioner.0.weight", (4, 3)),
+        ("arbitration.conditioner.0.bias", (4,)),
+        ("arbitration.conditioner.2.weight", (4, 4)),
+        ("arbitration.conditioner.2.bias", (4,)),
+        ("trunk.0.weight", (64, 5)),
+        ("trunk.0.bias", (5,)),
+        ("trunk.2.weight", (5, 3)),
+        ("trunk.2.bias", (3,)),
+        ("output_layer.weight", (3, 1)),
+        ("output_layer.bias", (1,)),
+    ]
+    expected_groups = [
+        (1.0, 1.0, ["trunk.0.weight", "trunk.2.weight", "output_layer.weight"]),
+        (0.1, 0.0, ["trunk.0.bias", "trunk.2.bias", "output_layer.bias"]),
+        (
+            1.0,
+            1.0,
+            [
+                "embedding.num_embedding.frequencies",
+                "embedding.num_embedding.cos_bias_param",
+                "embedding.num_embedding.weight",
+                "embedding.num_embedding.bias",
+            ],
+        ),
+        (
+            1.0,
+            0.0,
+            [
+                "arbitration.conditioner.0.weight",
+                "arbitration.conditioner.0.bias",
+                "arbitration.conditioner.2.weight",
+                "arbitration.conditioner.2.bias",
+            ],
+        ),
+    ]
+    torch.manual_seed(711)
+    feature_off = build_model("realmlp", params, 5, [], 1, "pbld")
+    assert _parameter_inventory(feature_off) == expected_parameters
+    assert sum(param.numel() for param in feature_off.parameters()) == 1531
+    assert _optimizer_inventory(feature_off) == expected_groups
+
+    # Omitting the new option is the legacy gate-only path; ``None`` must not
+    # change its initialization stream, parameter values, or predictions.
+    torch.manual_seed(711)
+    legacy = build_model(
+        "realmlp",
+        {key: value for key, value in params.items() if key != "tower_groups"},
+        5,
+        [],
+        1,
+        "pbld",
+    )
+    _assert_equal_state_dicts(feature_off, legacy)
+    x = torch.arange(20, dtype=torch.float32).reshape(4, 5) / 10
+    cat = torch.empty(4, 0, dtype=torch.long)
+    assert torch.equal(feature_off(x, cat), legacy(x, cat))
+
+
+@pytest.mark.skipif(
+    not os.environ.get("MASAMLP_PIN_FINGERPRINTS"),
+    reason=(
+        "pin 6d652dc0 fingerprints came from the macOS read-only worktree; "
+        "set MASAMLP_PIN_FINGERPRINTS=1 to verify them locally"
+    ),
+)
 def test_pin_parity_for_gate_only_and_towers_only():
-    # These independent fingerprints were generated with the frozen
-    # 6d652dc0 pin in ~/dev/masaMLP-wt-p1s2, not with this branch.
+    """Local-only macOS evidence generated in the read-only 6d652dc0 worktree."""
     x_gate = torch.arange(20, dtype=torch.float32).reshape(4, 5) / 10
     torch.manual_seed(712)
     gate = build_model(
