@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `profiled_realmlp`: jointly adjusted source towers with a repeatedly
+  training-projected dense remainder, unprojected/frozen controls, serialized
+  projection state, and training-only EMA-aware projection refreshes.
+
+
 ## 0.14.0 (2026-09-07)
 
 - Add opt-in RealMLP `tower_groups`: disjoint whole-feature towers remain

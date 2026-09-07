@@ -50,6 +50,7 @@ from masamlp.models.layers import (
 )
 from masamlp.models.lnn import CfCCell, TabularLNN
 from masamlp.models.modernnca import ModernNCA
+from masamlp.models.profiled_realmlp import ProfiledRealMLPNet
 from masamlp.models.realm import BatchEnsembleLinear, EnsembleNTPHead, RealMNet
 from masamlp.models.realmlp import NTPLinear, RealMLPNet
 from masamlp.models.resnet import TabularResNet
@@ -91,6 +92,7 @@ register_model("resnet")(TabularResNet)
 register_model("danet")(DANet)
 register_model("lnn")(TabularLNN)
 register_model("realmlp")(RealMLPNet)
+register_model("profiled_realmlp")(ProfiledRealMLPNet)
 register_model("hierarchical_realmlp")(HierarchicalRealMLPNet)
 register_model("realm")(RealMNet)
 register_model("tabr")(TabR)

@@ -636,3 +636,37 @@ no causal claim or competition gain is implied. Vectorized outer ensembles are
 unsupported under the WP2 hook contract. Auxiliary-only pretraining can use the
 ordinary Trainer with a zero primary objective, then a fresh binary Trainer over
 the same module with `auxiliary_weight=0`; optimizer state is reset between stages.
+
+
+### Profiled RealMLP (`model="profiled_realmlp"`)
+
+A dense RealMLP remainder and separate source-tower RealMLP share the input
+schema, with independent embeddings. `realmlp_params` accepts the ordinary
+RealMLP constructor options (including remainder `hidden_sizes`), except
+`first_layer_groups`, `tower_groups`, and `linear_skip_idx` combinations.
+Task defaults match RealMLP. No accuracy improvement is promised.
+
+- `source_groups`: disjoint whole embedding chunk indices covering all chunks;
+  default `None` makes one full-input source. Same indexing as `tower_groups`.
+- `source_hidden_sizes`: widths of each source tower, default `(128, 128, 16)`.
+  The last hidden layer is the learned projection basis.
+- `profile_mode`: `"joint"` (default), `"unprojected"`, or `"frozen"`.
+- `source_warmup_epochs`: nonnegative source-only epochs, default `0`. All
+  arms then activate the remainder. Frozen mode also freezes the complete
+  source network (embeddings, towers, head, dropout, and EMA parameters).
+- `projection_rtol`: relative pseudoinverse cutoff for the double precision
+  weighted Gram matrix, default `1e-10`.
+
+Before each active training epoch, weighted training-X statistics project the
+remainder logits onto an intercept and all source bases. Coefficients remain
+fixed during that epoch while trainable functions adjust. Orthogonality holds
+at refreshes up to numerical tolerance, not after every gradient update.
+The Trainer refreshes state for evaluation weights and after final EMA/best
+weights are restored. Prediction uses saved coefficients and is batch
+invariant. Zero-weight rows have no projection contribution. Final statistics
+and coefficients never use evaluation labels or covariates. `decompose` on
+preprocessed tensors returns per-source logits, remainder logits, and bases;
+component variances need not add to total variance because sources correlate.
+Full training passes add compute each epoch; double precision linear algebra
+is intended for CPU/CUDA. This mode has not been validated on XLA or with
+vectorized outer ensembles / `torch.compile`.
