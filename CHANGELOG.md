@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add standalone global Nyström KRR with blocked FP64 accumulation, nested
+  randomized Cholesky landmarks, dense parity reference and NumPy archives.
+- Add a weighted-logit residual head with validation-only gamma selection
+  and bit-preserving zero-gamma logit/probability fallback, including after load.
+
 ## 0.14.0 (2026-09-07)
 
 - Add opt-in RealMLP `tower_groups`: disjoint whole-feature towers remain
