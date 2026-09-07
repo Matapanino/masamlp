@@ -167,7 +167,7 @@ def build_model(
             **embed_kwargs,
         }
         return builder(embedding_config=config, out_dim=out_dim, **params)
-    if name == "realmlp" and params.get("arbitration") is not None:
+    if name in ("realmlp", "profiled_realmlp") and params.get("arbitration") is not None:
         options = dict(params["arbitration"])
         if "n_inputs" in options:
             raise ValueError("arbitration n_inputs is inferred by build_model; omit it")
@@ -179,7 +179,11 @@ def build_model(
     embedding = FeatureEmbedding(
         n_num, cat_cardinalities, num_embedding=num_embedding, **embed_kwargs
     )
-    if name == "realmlp" and params.get("arbitration") is not None and embedding.num_embedding:
+    if (
+        name in ("realmlp", "profiled_realmlp")
+        and params.get("arbitration") is not None
+        and embedding.num_embedding
+    ):
         # FeatureEmbedding's ordinary full numeric embedding records one output
         # chunk per numeric coordinate.  Arbitration's private input chunk map
         # instead describes the *reduced* semantic frame, so coalesce those

@@ -14,8 +14,28 @@ from copy import deepcopy
 import torch
 from torch import Tensor, nn
 
+from masamlp.models.arbitration import ReliabilityGate, post_arbitration_feature_layout
 from masamlp.models.base import FeatureEmbedding
-from masamlp.models.realmlp import RealMLPNet
+from masamlp.models.realmlp import RealMLPNet, _post_arbitration_tower_coordinates
+
+
+def _post_arbitration_source_groups(
+    groups: list[list[int]], embedding: FeatureEmbedding, gate: ReliabilityGate
+) -> list[list[int]]:
+    """Translate semantic post-gate groups to RealMLP's physical chunk indices."""
+    n_numeric_chunks = len(embedding.num_input_chunks)
+    # Reuse RealMLP's post-arbitration validation and messages for source routing.
+    _post_arbitration_tower_coordinates(
+        groups, embedding.feature_chunk_sizes, n_numeric_chunks, gate.n_heads
+    )
+    layout = post_arbitration_feature_layout(
+        embedding.feature_chunk_sizes, n_numeric_chunks, gate.n_heads
+    )
+    offsets = [0]
+    for size in embedding.feature_chunk_sizes:
+        offsets.append(offsets[-1] + size)
+    physical = [offsets.index(item.physical_slice.start) for item in layout]
+    return [[physical[index] for index in group] for group in groups]
 
 
 class ProfiledRealMLPNet(nn.Module):
@@ -25,7 +45,9 @@ class ProfiledRealMLPNet(nn.Module):
     learned source bases. ``unprojected`` keeps the same decomposition without
     subtraction. ``frozen`` freezes the sources after the shared warmup, then
     fits the projected remainder using the ordinary objective with fixed
-    source logits. No labels enter projection fitting.
+    source logits. With ``arbitration``, the outer profiled model owns one
+    shared gate, which remains trainable in frozen mode because it is not part
+    of the source network. No labels enter projection fitting.
     """
 
     def __init__(
@@ -53,6 +75,14 @@ class ProfiledRealMLPNet(nn.Module):
                 raise ValueError(f"profiled_realmlp does not combine with {key}")
         if source_groups is None:
             source_groups = [list(range(len(embedding.feature_chunk_sizes)))]
+        arbitration = realmlp_params.pop("arbitration", None)
+        self.arbitration = ReliabilityGate(**arbitration) if arbitration is not None else None
+        if self.arbitration is not None:
+            if embedding.n_num != self.arbitration.output_width:
+                raise ValueError("arbitration requires the reduced embedding built by build_model")
+            source_groups = _post_arbitration_source_groups(
+                source_groups, embedding, self.arbitration
+            )
         source_embedding = deepcopy(embedding)
         self.remainder = RealMLPNet(embedding, out_dim, **realmlp_params)
         source_params = {**realmlp_params, "hidden_sizes": source_hidden_sizes,
@@ -82,10 +112,19 @@ class ProfiledRealMLPNet(nn.Module):
         return self.sources.output_layer
 
     def param_groups(self):
-        return self.remainder.param_groups() + self.sources.param_groups()
+        groups = self.remainder.param_groups() + self.sources.param_groups()
+        if self.arbitration is not None:
+            groups.append(
+                {"params": list(self.arbitration.parameters()), "lr_factor": 1.0, "wd_factor": 0.0}
+            )
+        return groups
+
+    def _transform(self, x_num: Tensor) -> Tensor:
+        return self.arbitration(x_num) if self.arbitration is not None else x_num
 
     @torch.no_grad()
     def data_init(self, x_num: Tensor, x_cat: Tensor) -> None:
+        x_num = self._transform(x_num)
         self.remainder.data_init(x_num, x_cat)
         self.sources.data_init(x_num, x_cat)
 
@@ -107,7 +146,7 @@ class ProfiledRealMLPNet(nn.Module):
             self.sources.eval()
         return self
 
-    def _source_basis(self, x_num: Tensor, x_cat: Tensor):
+    def _source_basis_transformed(self, x_num: Tensor, x_cat: Tensor):
         h = self.sources.embedding(x_num, x_cat)
         if self.sources.front_scale is not None:
             h = self.sources.front_scale(h)
@@ -124,9 +163,14 @@ class ProfiledRealMLPNet(nn.Module):
         basis = torch.cat([torch.ones_like(bases[0][:, :1]), *bases], dim=1)
         return source, basis
 
+    def _source_basis(self, x_num: Tensor, x_cat: Tensor):
+        """Return source terms for raw pre-arbitration numeric inputs."""
+        return self._source_basis_transformed(self._transform(x_num), x_cat)
+
     def decompose(self, x_num: Tensor, x_cat: Tensor):
         """Return (source contributions, remainder, projection basis)."""
-        source, basis = self._source_basis(x_num, x_cat)
+        x_num = self._transform(x_num)
+        source, basis = self._source_basis_transformed(x_num, x_cat)
         if self.training and self._warmup:
             residual = torch.zeros_like(source[:, 0])
         else:
@@ -152,7 +196,8 @@ class ProfiledRealMLPNet(nn.Module):
     @torch.no_grad()
     def update_prediction_state(self, x_num: Tensor, x_cat: Tensor,
                                 weight: Tensor | None) -> None:
-        _, basis = self._source_basis(x_num, x_cat)
+        x_num = self._transform(x_num)
+        _, basis = self._source_basis_transformed(x_num, x_cat)
         b = basis.double()
         raw = self.remainder(x_num, x_cat).double()
         weighted = b if weight is None else b * weight.double().reshape(-1, 1)
