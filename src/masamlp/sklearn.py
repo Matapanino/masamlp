@@ -200,7 +200,7 @@ class BaseMasaModel(BaseEstimator):
     def _model_param_defaults(self) -> dict[str, Any]:
         """Architecture defaults per model/task, overridable via
         ``model_params`` (e.g. RealMLP's SELU-for-classification)."""
-        if self.model in ("realmlp", "realm"):
+        if self.model in ("realmlp", "realm", "profiled_realmlp"):
             return {"num_scaling": True}
         return {}
 
