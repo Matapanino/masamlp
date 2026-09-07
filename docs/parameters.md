@@ -694,6 +694,14 @@ Task defaults match RealMLP. No accuracy improvement is promised.
 - `source_warmup_epochs`: nonnegative source-only epochs, default `0`. All
   arms then activate the remainder. Frozen mode also freezes the complete
   source network (embeddings, towers, head, dropout, and EMA parameters).
+- `arbitration`: optional reliability-gate dictionary with the same contract
+  as RealMLP. The profiled model owns one gate and applies it once before its
+  separate source and remainder embeddings. With a gate, `source_groups`
+  addresses retained numeric chunks, categorical chunks, then mixtures, as
+  returned by `post_arbitration_feature_layout`; the remainder receives the
+  whole reduced frame. The gate is not part of the source network, so frozen
+  mode freezes sources only and keeps its gate trainable (lr factor 1, zero
+  weight decay).
 - `projection_rtol`: relative pseudoinverse cutoff for the double precision
   weighted Gram matrix, default `1e-10`.
 
