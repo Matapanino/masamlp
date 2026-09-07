@@ -42,7 +42,7 @@ import torch
 from torch import Tensor, nn
 
 from masamlp.core.trainer import flat_cos
-from masamlp.models.arbitration import ReliabilityGate
+from masamlp.models.arbitration import ReliabilityGate, post_arbitration_feature_layout
 from masamlp.models.base import FeatureEmbedding, _resolve_column_idx
 from masamlp.models.layers import ScalingLayer
 
@@ -135,14 +135,56 @@ def _first_layer_coordinates(
             raise ValueError(message)
         coordinates = []
         for feature in group:
-            if (isinstance(feature, bool) or not isinstance(feature, int)
-                    or feature < 0 or feature >= len(chunks)):
+            if (
+                isinstance(feature, bool)
+                or not isinstance(feature, int)
+                or feature < 0
+                or feature >= len(chunks)
+            ):
                 raise ValueError(message)
             seen.append(feature)
             coordinates.extend(range(offsets[feature], offsets[feature + 1]))
         expanded.append(coordinates)
     if sorted(seen) != list(range(len(chunks))):
         raise ValueError(message)
+    return expanded
+
+
+def _post_arbitration_tower_coordinates(
+    groups: list[list[int]], feature_chunk_sizes: list[int], n_numeric_chunks: int, n_heads: int
+) -> list[list[int]]:
+    """Expand semantic post-gate tower groups to physical embedding coordinates."""
+    layout = post_arbitration_feature_layout(feature_chunk_sizes, n_numeric_chunks, n_heads)
+    if not isinstance(groups, (list, tuple)) or not groups:
+        raise ValueError(
+            "tower_groups must partition every post-arbitration feature chunk exactly once"
+        )
+    seen: set[int] = set()
+    expanded: list[list[int]] = []
+    for group in groups:
+        if not isinstance(group, (list, tuple)) or not group:
+            raise ValueError(
+                "tower_groups must partition every post-arbitration feature chunk exactly once"
+            )
+        coordinates: list[int] = []
+        for index in group:
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise ValueError(f"tower_groups index {index!r} must be an integer")
+            if index < 0 or index >= len(layout):
+                raise ValueError(
+                    f"tower_groups index {index} is outside the post-arbitration semantic range"
+                )
+            if index in seen:
+                raise ValueError(f"tower_groups index {index} appears more than once")
+            seen.add(index)
+            physical = layout[index].physical_slice
+            coordinates.extend(range(physical.start, physical.stop))
+        expanded.append(coordinates)
+    missing = next((index for index in range(len(layout)) if index not in seen), None)
+    if missing is not None:
+        raise ValueError(
+            f"tower_groups index {missing} is missing from the post-arbitration partition"
+        )
     return expanded
 
 
@@ -163,8 +205,8 @@ class GroupedNTPLinear(NTPLinear):
         start = 0
         for i, inputs in enumerate(groups):
             width = out_features // len(groups) + int(i < out_features % len(groups))
-            mask[inputs, start:start + width] = 1
-            scale[start:start + width] = 1 / math.sqrt(len(inputs))
+            mask[inputs, start : start + width] = 1
+            scale[start : start + width] = 1 / math.sqrt(len(inputs))
             start += width
         self.register_buffer("group_mask", mask)
         self.register_buffer("group_scale", scale)
@@ -297,13 +339,25 @@ class RealMLPNet(nn.Module):
                 raise ValueError("tower_groups and first_layer_groups are mutually exclusive")
             if not hidden_sizes or any(width < 1 for width in hidden_sizes):
                 raise ValueError("tower_groups requires hidden_sizes with positive widths")
-            tower_coordinates = _first_layer_coordinates(
-                tower_groups, embedding.feature_chunk_sizes, "tower_groups"
-            )
+        if arbitration is not None and first_layer_groups is not None:
+            raise ValueError("arbitration and first_layer_groups are mutually exclusive")
         self.embedding = embedding
         self.arbitration = ReliabilityGate(**arbitration) if arbitration is not None else None
         if self.arbitration is not None and embedding.n_num != self.arbitration.output_width:
             raise ValueError("arbitration requires the reduced embedding built by build_model")
+        if tower_groups is not None:
+            tower_coordinates = (
+                _post_arbitration_tower_coordinates(
+                    tower_groups,
+                    embedding.feature_chunk_sizes,
+                    len(embedding.num_input_chunks),
+                    self.arbitration.n_heads,
+                )
+                if self.arbitration is not None
+                else _first_layer_coordinates(
+                    tower_groups, embedding.feature_chunk_sizes, "tower_groups"
+                )
+            )
         self.dropout_schedule = dropout_schedule
         self.act_lr_factor = act_lr_factor
         self.plr_lr_factor = plr_lr_factor
@@ -340,11 +394,19 @@ class RealMLPNet(nn.Module):
                 raise ValueError("first_layer_groups needs at least one hidden unit per group")
         self.towers: nn.ModuleList | None = None
         if tower_coordinates is not None and len(tower_coordinates) > 1:
-            self.towers = nn.ModuleList([
-                _RealMLPTower(coordinates, hidden_sizes, activation, use_parametric_act,
-                              dropout, dropout_schedule)
-                for coordinates in tower_coordinates
-            ])
+            self.towers = nn.ModuleList(
+                [
+                    _RealMLPTower(
+                        coordinates,
+                        hidden_sizes,
+                        activation,
+                        use_parametric_act,
+                        dropout,
+                        dropout_schedule,
+                    )
+                    for coordinates in tower_coordinates
+                ]
+            )
             d_in = len(self.towers) * hidden_sizes[-1]
         else:
             # None and one full group retain the original dense construction,
@@ -431,7 +493,7 @@ class RealMLPNet(nn.Module):
         if self.init_mode != "std+he5":
             return
         was_training = self.training
-        self.eval()                      # dropout must be identity during the walk
+        self.eval()  # dropout must be identity during the walk
         if self.arbitration is not None:
             x_num = self.arbitration(x_num)
         h = self.embedding(x_num, x_cat)
@@ -447,7 +509,8 @@ class RealMLPNet(nn.Module):
                 for module in tower.trunk:
                     branch = (
                         module.data_init_(branch)
-                        if isinstance(module, NTPLinear) else module(branch)
+                        if isinstance(module, NTPLinear)
+                        else module(branch)
                     )
                 outputs.append(branch)
             h = math.sqrt(len(self.towers)) * torch.cat(outputs, dim=1)
@@ -483,15 +546,11 @@ class RealMLPNet(nn.Module):
         weights = [m.weight for m in rest]
         biases = [m.bias for m in rest]
         scale = (
-            list(self.embedding.scaling.parameters())
-            if self.embedding.scaling is not None
-            else []
+            list(self.embedding.scaling.parameters()) if self.embedding.scaling is not None else []
         )
         if self.front_scale is not None:
             scale = scale + list(self.front_scale.parameters())
-        act = [
-            m.alpha for m in self.modules() if isinstance(m, ParametricActivation)
-        ]
+        act = [m.alpha for m in self.modules() if isinstance(m, ParametricActivation)]
         plr = (
             list(self.embedding.num_embedding.parameters())
             if self.embedding.num_embedding is not None
@@ -514,16 +573,18 @@ class RealMLPNet(nn.Module):
             *(
                 [
                     {"params": first_w, "lr_factor": ff},
-                    {"params": first_b, "lr_factor": self.bias_lr_factor * ff,
-                     "wd_factor": 0.0},
+                    {"params": first_b, "lr_factor": self.bias_lr_factor * ff, "wd_factor": 0.0},
                     {"params": weights, "lr_factor": 1.0},
                     {"params": biases, "lr_factor": self.bias_lr_factor, "wd_factor": 0.0},
                 ]
                 if ff != 1.0
                 else [
                     {"params": first_w + weights, "lr_factor": 1.0},
-                    {"params": first_b + biases, "lr_factor": self.bias_lr_factor,
-                     "wd_factor": 0.0},
+                    {
+                        "params": first_b + biases,
+                        "lr_factor": self.bias_lr_factor,
+                        "wd_factor": 0.0,
+                    },
                 ]
             ),
             {"params": act, "lr_factor": self.act_lr_factor},

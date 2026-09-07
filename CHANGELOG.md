@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- RealMLP: `arbitration` and `tower_groups` now compose through a public
+  post-arbitration semantic chunk layout; default gate-only and tower-only
+  construction remains bit-identical to the 0.14.0 reliability-gate pin.
 - RealMLP: optional reliability-conditioned convex estimator arbitration, with
   constant and concatenated controls and per-row weight inspection.
 - Preprocessing: `numeric_passthrough_cols` preserves selected numeric units

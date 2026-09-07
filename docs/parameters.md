@@ -325,7 +325,7 @@ The inner axis composes with outer `n_ens` in loop or vectorized mode.
 | `scale_lr_factor` | `6.0` | Learning-rate factor for the scaling layer. RealMLP-TD's tuned configurations use values around 2–10. |
 | `first_layer_lr_factor` | `1.0` | Extra learning-rate factor on the first hidden layer's weight **and** bias (pytabkit applies it to both, and to neither the scaling layer nor the numeric embedding). |
 | `first_layer_groups` | `None` | Opt-in disjoint source groups for the first hidden layer. A list of lists partitioning indices of `embedding.feature_chunk_sizes` exactly once; each group gets a contiguous, nearly equal share of first-layer units and its own active-fan-in normalization. Whole embedded feature chunks stay together. Later layers remain dense. `None` or one full group preserves the dense model and RNG draws. Requires a hidden layer with at least one unit per group. Groups address the embedding output order (embedded numerics, bypass numerics, then categorical embeddings), including any preprocessing expansion; callers own semantic source mapping. Fixed masks constrain both training and data-driven initialization and persist through save/load. |
-| `tower_groups` | `None` | Opt-in parallel towers separated through every hidden layer. A list of lists partitioning indices of `embedding.feature_chunk_sizes` exactly once, using the same whole-chunk contract and embedding output order as `first_layer_groups`; callers own semantic source mapping. Requires at least one hidden layer and positive widths; mutually exclusive with `first_layer_groups`. Every tower's first linear receives `first_layer_lr_factor`. Data-driven initialization and scheduled dropout reach every tower, and coordinate index buffers persist through save/load. |
+| `tower_groups` | `None` | Opt-in parallel towers separated through every hidden layer. Without `arbitration`, a list of lists partitioning indices of `embedding.feature_chunk_sizes` exactly once, using the same whole-chunk contract and embedding output order as `first_layer_groups`. With `arbitration`, indices instead partition the post-arbitration semantic layout described below. Requires at least one hidden layer and positive widths; mutually exclusive with `first_layer_groups`. Every tower's first linear receives `first_layer_lr_factor`. Data-driven initialization and scheduled dropout reach every tower, and coordinate index buffers persist through save/load. |
 | `bias_lr_factor` | `0.1` | Learning-rate factor for every NTP bias (biases also never receive weight decay). |
 | `linear_skip_idx` | `None` | Positional form of the estimator's `linear_skip_cols`: positions in the numeric block that also feed a zero-initialized linear map onto the output (`raw = trunk(x) + x_skip @ W_skip + b_skip`), read *before* the scaling layer and any numeric embedding. Its parameters form their own optimizer group at `linear_skip_lr_factor` with zero weight decay. |
 
@@ -665,6 +665,15 @@ pure torch module, with no fitting, label or device logic. `net.arbitration.weig
 returns `(rows, heads, estimates)` for diagnostics. `mix(x_num)` returns the mixtures.
 Construct through `build_model` or an estimator so the embedding width is adjusted;
 `n_inputs` is filled internally and is not a user option. `num_embedding_cols` and
-PLE are not supported together with arbitration. Group routing and linear skips,
-if supplied, address the **reduced** numeric/embedding coordinates.
+PLE are not supported together with arbitration. `first_layer_groups` remains
+unsupported with arbitration. `linear_skip_idx`, if supplied, addresses the
+**reduced** numeric coordinates. `tower_groups` may be supplied with arbitration:
+its indices partition the post-arbitration semantic chunks exactly once — kept
+numeric chunks in their original order, then ordinary categorical embedding chunks,
+then the appended one-wide mixture chunks. Use
+`post_arbitration_feature_layout(feature_chunk_sizes, n_numeric_chunks, n_heads)`
+to obtain `PostArbitrationFeature(name, kind, size, physical_slice)` records and
+build a semantic map without duplicating the physical-slice translation. A
+post-reduction `_num_input_chunks` map is supported for this route, so one-hot
+chunks remain whole even when their numeric embedding expands their coordinates.
 `arbitration=None` preserves the existing initialization and forward path.
