@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 
 import numpy as np
 import pytest
@@ -58,6 +59,28 @@ def _group_hash(model):
     )
 
 
+def _parameter_inventory(model):
+    return [(name, tuple(param.shape)) for name, param in model.named_parameters()]
+
+
+def _optimizer_inventory(model):
+    names = {id(param): name for name, param in model.named_parameters()}
+    return [
+        (
+            group.get("lr_factor", 1.0),
+            group.get("wd_factor", 1.0),
+            [names[id(param)] for param in group["params"]],
+        )
+        for group in model.param_groups()
+    ]
+
+
+def _assert_equal_state_dicts(left, right):
+    assert left.state_dict().keys() == right.state_dict().keys()
+    for name, value in left.state_dict().items():
+        assert torch.equal(value, right.state_dict()[name]), name
+
+
 def _plain(mode="joint", warmup=0):
     torch.manual_seed(401)
     return ProfiledRealMLPNet(
@@ -97,6 +120,82 @@ def _inputs():
     return torch.randn(24, 8), torch.empty(24, 0, dtype=torch.long)
 
 
+def test_arbitration_off_has_recorded_inventory_and_deterministic_legacy_path():
+    """The no-gate profiled construction remains the original in-process path."""
+    expected_parameters = [
+        ("remainder.embedding.scaling.scale", (4,)),
+        ("remainder.trunk.0.weight", (4, 8)),
+        ("remainder.trunk.0.bias", (8,)),
+        ("remainder.trunk.2.weight", (8, 6)),
+        ("remainder.trunk.2.bias", (6,)),
+        ("remainder.output_layer.weight", (6, 1)),
+        ("remainder.output_layer.bias", (1,)),
+        ("sources.embedding.scaling.scale", (4,)),
+        ("sources.towers.0.trunk.0.weight", (2, 7)),
+        ("sources.towers.0.trunk.0.bias", (7,)),
+        ("sources.towers.0.trunk.2.weight", (7, 3)),
+        ("sources.towers.0.trunk.2.bias", (3,)),
+        ("sources.towers.1.trunk.0.weight", (2, 7)),
+        ("sources.towers.1.trunk.0.bias", (7,)),
+        ("sources.towers.1.trunk.2.weight", (7, 3)),
+        ("sources.towers.1.trunk.2.bias", (3,)),
+        ("sources.output_layer.weight", (6, 1)),
+        ("sources.output_layer.bias", (1,)),
+    ]
+    expected_groups = [
+        (6.0, 1.0, ["remainder.embedding.scaling.scale"]),
+        (
+        1.0,
+        1.0,
+        ["remainder.trunk.0.weight", "remainder.trunk.2.weight", "remainder.output_layer.weight"],
+    ),
+        (
+            0.1,
+            0.0,
+            ["remainder.trunk.0.bias", "remainder.trunk.2.bias", "remainder.output_layer.bias"],
+        ),
+        (6.0, 1.0, ["sources.embedding.scaling.scale"]),
+        (
+            1.0,
+            1.0,
+            [
+                "sources.towers.0.trunk.0.weight",
+                "sources.towers.1.trunk.0.weight",
+                "sources.towers.0.trunk.2.weight",
+                "sources.towers.1.trunk.2.weight",
+                "sources.output_layer.weight",
+            ],
+        ),
+        (
+            0.1,
+            0.0,
+            [
+                "sources.towers.0.trunk.0.bias",
+                "sources.towers.1.trunk.0.bias",
+                "sources.towers.0.trunk.2.bias",
+                "sources.towers.1.trunk.2.bias",
+                "sources.output_layer.bias",
+            ],
+        ),
+    ]
+    first = _plain()
+    assert first.arbitration is None
+    assert _parameter_inventory(first) == expected_parameters
+    assert sum(param.numel() for param in first.parameters()) == 206
+    assert _optimizer_inventory(first) == expected_groups
+
+    second = _plain()
+    _assert_equal_state_dicts(first, second)
+    torch.manual_seed(402)
+    x = torch.randn(17, 4)
+    c = torch.empty(17, 0, dtype=torch.long)
+    first.set_training_epoch(0)
+    second.set_training_epoch(0)
+    first.eval()
+    second.eval()
+    assert torch.equal(first(x, c), second(x, c))
+
+
 @pytest.mark.parametrize(
     "mode,warmup,state_hash,forward_hash",
     [
@@ -108,8 +207,15 @@ def _inputs():
         ("frozen", 4, _PROJECTED_STATE, _WARMUP_FORWARD),
     ],
 )
+@pytest.mark.skipif(
+    not os.environ.get("MASAMLP_PIN_FINGERPRINTS"),
+    reason=(
+        "pin ee61e06 fingerprints came from the macOS read-only worktree; "
+        "set MASAMLP_PIN_FINGERPRINTS=1 to verify them locally"
+    ),
+)
 def test_no_arbitration_is_byte_identical_to_ee61e06(mode, warmup, state_hash, forward_hash):
-    # Fingerprints generated in ~/dev/masaMLP-wt-p1 at ee61e060.
+    """Local-only macOS evidence generated in the read-only ee61e06 worktree."""
     net = _plain(mode, warmup)
     torch.manual_seed(402)
     x = torch.randn(17, 4)
