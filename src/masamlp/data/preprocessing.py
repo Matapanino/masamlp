@@ -58,12 +58,14 @@ class TabularPreprocessor:
         max_quantiles: int = 1000,
         cat_encoding: str = "embedding",
         onehot_max_categories: int = 9,
+        numeric_passthrough_cols: list[str] | None = None,
     ) -> None:
         if numeric_scaler not in _SCALERS:
             raise ValueError(f"numeric_scaler must be one of {_SCALERS}")
         if cat_encoding not in _CAT_ENCODINGS:
             raise ValueError(f"cat_encoding must be one of {_CAT_ENCODINGS}")
         self.numeric_scaler = numeric_scaler
+        self.numeric_passthrough_cols = numeric_passthrough_cols
         self.categorical_features = categorical_features
         self.max_quantiles = max_quantiles
         self.cat_encoding = cat_encoding
@@ -81,6 +83,16 @@ class TabularPreprocessor:
         self.categorical_idx_ = sorted(cat_idx)
         self.numeric_idx_ = [i for i in range(df.shape[1]) if i not in cat_idx]
 
+        names = self.numeric_passthrough_cols
+        self.passthrough_idx_ = []
+        if names is not None:
+            numeric = {self.feature_names_in_[i]: j for j, i in enumerate(self.numeric_idx_)}
+            if (not isinstance(names, (list, tuple)) or not names
+                    or any(not isinstance(c, str) for c in names)
+                    or len(set(names)) != len(names) or any(c not in numeric for c in names)):
+                raise ValueError(
+                    "numeric_passthrough_cols must name unique existing numeric columns")
+            self.passthrough_idx_ = [numeric[c] for c in names]
         self.categories_: list[list[str]] = []
         for i in self.categorical_idx_:
             col = df.iloc[:, i]
@@ -137,6 +149,7 @@ class TabularPreprocessor:
                 f"X has {df.shape[1]} features, expected {self.n_features_in_}"
             )
         num = self._impute(self._matrix(df))
+        passthrough = num[:, self.passthrough_idx_].copy()
         if self.numeric_scaler == "quantile":
             out = np.empty_like(num)
             m = self.quantiles_.shape[1] if num.shape[1] else 0
@@ -154,6 +167,7 @@ class TabularPreprocessor:
             num = self.factors_ * (num - self.center_)
             num = num / np.sqrt(1.0 + (num / 3.0) ** 2)
 
+        num[:, self.passthrough_idx_] = passthrough
         x_cat = np.zeros((df.shape[0], len(self.embed_pos_)), dtype=np.int64)
         for out_col, pos in enumerate(self.embed_pos_):
             mapping = {key: k + 1 for k, key in enumerate(self.categories_[pos])}
@@ -283,6 +297,8 @@ class TabularPreprocessor:
     def get_state(self) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
         meta: dict[str, Any] = {
             "numeric_scaler": self.numeric_scaler,
+            "numeric_passthrough_cols": self.numeric_passthrough_cols,
+            "passthrough_idx": self.passthrough_idx_,
             "max_quantiles": self.max_quantiles,
             "cat_encoding": self.cat_encoding,
             "onehot_max_categories": self.onehot_max_categories,
@@ -310,6 +326,7 @@ class TabularPreprocessor:
     ) -> TabularPreprocessor:
         pre = cls(
             numeric_scaler=meta["numeric_scaler"],
+            numeric_passthrough_cols=meta.get("numeric_passthrough_cols"),
             max_quantiles=meta["max_quantiles"],
             cat_encoding=meta.get("cat_encoding", "embedding"),
             onehot_max_categories=meta.get("onehot_max_categories", 9),
@@ -317,6 +334,7 @@ class TabularPreprocessor:
         pre.feature_names_in_ = list(meta["feature_names_in"])
         pre.n_features_in_ = int(meta["n_features_in"])
         pre.numeric_idx_ = [int(i) for i in meta["numeric_idx"]]
+        pre.passthrough_idx_ = [int(i) for i in meta.get("passthrough_idx", [])]
         pre.categorical_idx_ = [int(i) for i in meta["categorical_idx"]]
         pre.categories_ = [list(c) for c in meta["categories"]]
         pre._resolve_cat_split()

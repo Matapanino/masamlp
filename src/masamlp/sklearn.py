@@ -112,6 +112,7 @@ class BaseMasaModel(BaseEstimator):
         linear_skip_cols: list[str] | None = None,
         linear_skip_lr_factor: float = 1.0,
         numeric_scaler: str = "quantile",
+        numeric_passthrough_cols: list[str] | None = None,
         categorical_features: Any = "auto",
         cat_encoding: str = "embedding",
         onehot_max_categories: int = 9,
@@ -152,6 +153,7 @@ class BaseMasaModel(BaseEstimator):
         self.linear_skip_cols = linear_skip_cols
         self.linear_skip_lr_factor = linear_skip_lr_factor
         self.numeric_scaler = numeric_scaler
+        self.numeric_passthrough_cols = numeric_passthrough_cols
         self.categorical_features = categorical_features
         self.cat_encoding = cat_encoding
         self.onehot_max_categories = onehot_max_categories
@@ -325,6 +327,7 @@ class BaseMasaModel(BaseEstimator):
         pre = TabularPreprocessor(
             self.numeric_scaler,
             self.categorical_features,
+            numeric_passthrough_cols=self.numeric_passthrough_cols,
             cat_encoding=self.cat_encoding,
             onehot_max_categories=self.onehot_max_categories,
         )

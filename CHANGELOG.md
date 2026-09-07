@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- RealMLP: optional reliability-conditioned convex estimator arbitration, with
+  constant and concatenated controls and per-row weight inspection.
+- Preprocessing: `numeric_passthrough_cols` preserves selected numeric units
+  through scaling and save/load, for common-scale estimator mixtures.
+
 ## 0.14.0 (2026-09-07)
 
 - Add opt-in RealMLP `tower_groups`: disjoint whole-feature towers remain
