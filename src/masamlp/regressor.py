@@ -155,7 +155,7 @@ class MasaRegressor(RegressorMixin, BaseMasaModel):
         return "rmse"
 
     def _model_param_defaults(self) -> dict[str, Any]:
-        if self.model == "realmlp":
+        if self.model in ("realmlp", "profiled_realmlp"):
             # RealMLP-TD-S uses Mish for regression.
             return {"num_scaling": True, "activation": "mish"}
         return super()._model_param_defaults()
