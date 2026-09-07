@@ -26,7 +26,7 @@ from collections.abc import Callable
 
 from torch import nn
 
-from masamlp.models.arbitration import arbitration_layout
+from masamlp.models.arbitration import arbitration_layout, post_arbitration_feature_layout
 from masamlp.models.auxiliary import AuxiliaryOrdinalNet
 from masamlp.models.base import (
     FeatureEmbedding,
@@ -144,9 +144,7 @@ def build_model(
     builder = _MODEL_REGISTRY[name]
     params = dict(model_params or {})
     embed_kwargs = {k: params.pop(k) for k in _EMBEDDING_KEYS if k in params}
-    private_embed_kwargs = {
-        k: params.pop(k) for k in _INTERNAL_EMBEDDING_KEYS if k in params
-    }
+    private_embed_kwargs = {k: params.pop(k) for k in _INTERNAL_EMBEDDING_KEYS if k in params}
     # n_bins controls fitting in sklearn.py. Once fitted, FeatureEmbedding
     # only needs the serialized boundaries themselves.
     embed_kwargs.pop("n_bins", None)
@@ -171,7 +169,7 @@ def build_model(
         options = dict(params["arbitration"])
         if "n_inputs" in options:
             raise ValueError("arbitration n_inputs is inferred by build_model; omit it")
-        if any(k in embed_kwargs for k in ("num_embedding_idx", "num_input_chunks", "ple_bins")):
+        if any(k in embed_kwargs for k in ("num_embedding_idx", "ple_bins")):
             raise ValueError("arbitration does not support numeric subset routing or PLE bins")
         _, reduced_width = arbitration_layout(n_num, **options)
         params["arbitration"] = {**options, "n_inputs": n_num}
@@ -179,6 +177,20 @@ def build_model(
     embedding = FeatureEmbedding(
         n_num, cat_cardinalities, num_embedding=num_embedding, **embed_kwargs
     )
+    if name == "realmlp" and params.get("arbitration") is not None and embedding.num_embedding:
+        # FeatureEmbedding's ordinary full numeric embedding records one output
+        # chunk per numeric coordinate.  Arbitration's private input chunk map
+        # instead describes the *reduced* semantic frame, so coalesce those
+        # physical embedding chunks here.  This affects only the newly allowed
+        # arbitration + num_input_chunks route; default one-wide chunks are an
+        # exact no-op and all non-arbitration construction stays untouched.
+        numeric_chunks = embedding.feature_chunk_sizes[:n_num]
+        compact: list[int] = []
+        start = 0
+        for width in embedding.num_input_chunks:
+            compact.append(sum(numeric_chunks[start : start + width]))
+            start += width
+        embedding.feature_chunk_sizes = compact + embedding.feature_chunk_sizes[n_num:]
     return builder(embedding=embedding, out_dim=out_dim, **params)
 
 
@@ -209,6 +221,7 @@ __all__ = [
     "FTTransformer",
     "TabTransformer",
     "TabM",
+    "post_arbitration_feature_layout",
     "EnsembleHead",
     "ModernNCA",
     "GandalfNet",
