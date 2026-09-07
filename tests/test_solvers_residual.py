@@ -43,7 +43,8 @@ def test_t5_zero_gamma_bit_for_bit(tmp_path, monkeypatch, parent):
             sentinel[:5] = [0.0, -0.0, np.inf, -np.inf, np.nan]
             # inf/NaN corrections corrupt finite and infinite parent sentinels
             # under eta + 0*f. The shortcut must never evaluate the correction.
-            monkeypatch.setattr(current, "correction", lambda X: np.full(len(X), np.inf))
+            monkeypatch.setattr(current, "correction",
+                                lambda X, dtype=dtype: np.full(len(X), np.inf, dtype=dtype))
             assert_same_bits(current.predict_logit(X, sentinel, gamma=0), sentinel)
             assert_same_bits(current.predict_logit(X, sentinel), sentinel)
             proba = sigmoid(eta).astype(dtype)
@@ -119,6 +120,31 @@ def test_t7_true_parent_keeps_zero():
     y = np.concatenate([np.arange(100) < round(100 * p) for p in sigmoid(levels)]).astype(int)
     head = LinearResidualKRR(r=20, bandwidth=1, dtype="float64").fit(X, y, eta0=eta)
     assert head.select_gamma(X.copy(), eta.copy(), y.copy()) == 0
+
+
+def test_t7_balanced_logistic_interaction_units():
+    # Analytic calibration fixture: true p=0.7/0.3, logit=+/-log(7/3),
+    # balanced main effects, and a missing x0*x1 term. Keep the same 10% gate.
+    # The wrong probability residual is only +/-0.2; the working residual is
+    # +/-0.8. AUC alone cannot distinguish these two perfectly ranked heads.
+    rng = np.random.default_rng(7)
+    cells = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]], dtype=float)
+    X = np.repeat(cells, 200, axis=0)
+    probabilities = sigmoid(np.log(7 / 3) * cells[:, 0] * cells[:, 1])
+    y_train = np.concatenate([rng.permutation(np.arange(200) < round(200 * p))
+                              for p in probabilities]).astype(int)
+    y_val = np.concatenate([rng.permutation(np.arange(200) < round(200 * p))
+                            for p in probabilities]).astype(int)
+    parent = LogisticRegression(C=100, max_iter=1000).fit(X, y_train)
+    eta = parent.decision_function(X)
+    head = LinearResidualKRR(r=4, reg=0.3, bandwidth=1.5, dtype="float64").fit(
+        X, y_train, eta0=eta
+    )
+    assert head.select_gamma(X, eta, y_val) > 0
+    # AUC ties choose the smallest gamma, so assess the logit-unit mechanism
+    # at its full Newton step as well as at the selected step in the test above.
+    corrected = sigmoid(head.predict_logit(X, eta, gamma=1))
+    assert log_loss(y_val, corrected) <= 0.9 * log_loss(y_val, sigmoid(eta))
 
 
 def test_t9_nonzero_head_roundtrip(tmp_path):

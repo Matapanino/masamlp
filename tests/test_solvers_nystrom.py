@@ -45,7 +45,9 @@ def test_t1_dense_parity(kernel):
     expected = np.linalg.solve(Knn + np.diag(0.3 / w), t)
     assert relative_error(dense.alpha_, expected) <= 1e-6
     fp32 = NystromKRR(**(params | {"dtype": "float32"})).fit(X, t, sample_weight=w)
-    sigmoid = lambda a: 1 / (1 + np.exp(-a))
+    def sigmoid(a):
+        return 1 / (1 + np.exp(-a))
+
     assert np.max(np.abs(sigmoid(fp32.predict(query)) - sigmoid(low.predict(query)))) <= 1e-5
 
 
@@ -169,3 +171,43 @@ def test_degenerate_landmarks_and_solver_fallback(monkeypatch):
     assert model.solver_path_ == "eigh"
     assert len(calls) == 4  # initial attempt, at most three jitter retries
     assert np.isfinite(model.predict(X)).all()
+
+
+def test_rpcholesky_matches_independent_dense_pivot_reference():
+    X, _, _ = data(37)
+    gram = kernel_reference(X, X, 2)
+    rng = np.random.default_rng(19)
+    factor = np.zeros((len(X), 21))
+    diagonal = np.ones(len(X))
+    expected = []
+    for j in range(21):
+        pivot = rng.choice(len(X), p=diagonal / diagonal.sum())
+        expected.append(pivot)
+        column = gram[:, pivot] - factor[:, :j] @ factor[pivot, :j]
+        factor[:, j] = column / np.sqrt(diagonal[pivot])
+        diagonal = np.maximum(diagonal - factor[:, j] ** 2, 0)
+        diagonal[expected] = 0
+    for block in (15, 16384):
+        actual = rpcholesky_landmarks(X, 21, 19, block=block, bandwidth=2)
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_bandwidth_and_streamed_kernel_workspace(monkeypatch):
+    import masamlp.solvers.nystrom_krr as module
+
+    X, t, w = data(137)
+    distance = np.sqrt(((X[:, None] - X[None, :]) ** 2).sum(axis=2))
+    expected = np.median(distance[np.triu_indices(len(X), 1)]) * 1.25
+    original = module._kernel
+    shapes = []
+
+    def observed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        shapes.append(tuple(result.shape))
+        return result
+
+    monkeypatch.setattr(module, "_kernel", observed)
+    model = NystromKRR(r=17, block_rows=35, predict_batch_rows=30,
+                       bandwidth_scale=1.25, dtype="float64").fit(X, t, w)
+    assert model.bandwidth_ == pytest.approx(expected, rel=1e-14)
+    assert shapes and all(rows <= 10 and columns == 17 for rows, columns in shapes)
