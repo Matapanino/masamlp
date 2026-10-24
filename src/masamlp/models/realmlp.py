@@ -41,7 +41,7 @@ from collections.abc import Callable
 import torch
 from torch import Tensor, nn
 
-from masamlp.core.trainer import flat_cos
+from masamlp.core.schedules import resolve_schedule
 from masamlp.models.base import FeatureEmbedding, _resolve_column_idx
 from masamlp.models.layers import ScalingLayer
 
@@ -49,6 +49,7 @@ _ACTIVATIONS: dict[str, Callable[[Tensor], Tensor]] = {
     "mish": torch.nn.functional.mish,
     "selu": torch.selu,
     "relu": torch.relu,
+    "silu": torch.nn.functional.silu,
 }
 
 
@@ -57,7 +58,9 @@ _ACTIVATIONS: dict[str, Callable[[Tensor], Tensor]] = {
 #: 0.8.0.  ``"std+he5"`` is pytabkit's RealMLP-**TD** default
 #: (``weight_init_mode="std"``, ``bias_init_mode="he+5"``): a sequential,
 #: layer-by-layer, *data-driven* init that needs a batch of training rows.
-_INIT_MODES = ("ntp", "std+he5")
+#: ``"std+negud2"`` keeps those weights and selects pytabkit's tuned
+#: ``bias_init_mode="neg-uniform-dynamic-2"`` instead.
+_INIT_MODES = ("ntp", "std+he5", "std+negud2")
 
 
 def _heplus_bias(pre: Tensor, n_simplex: int = 5) -> Tensor:
@@ -76,13 +79,25 @@ def _heplus_bias(pre: Tensor, n_simplex: int = 5) -> Tensor:
     return -(picked * w.to(pre.dtype)).sum(dim=1)
 
 
+def _data_init_bias(pre: Tensor, mode: str) -> Tensor:
+    if mode == "he+5":
+        return _heplus_bias(pre)
+    if mode == "neg-uniform-dynamic-2":
+        # pytabkit/models/nn_models/nn.py:252. The mean lies outside the
+        # std multiplier, unlike the older "neg-uniform-dynamic" option.
+        mean = pre.mean(dim=0)
+        std = pre.std(dim=0, correction=0)
+        return -mean - std * math.sqrt(3) * torch.rand(pre.shape[1], device=pre.device)
+    raise ValueError(f"Unknown bias_init_mode {mode!r}")
+
+
 class NTPLinear(nn.Module):
     """Linear layer in the neural-tangent parametrization: weights are drawn
     from N(0, 1) and the forward pass scales by ``1/sqrt(in_features)``,
     which shifts the effective per-layer learning rates.
 
     Construction always uses the ``"ntp"`` draw (``W, b ~ N(0, 1)``).  The
-    data-driven ``"std+he5"`` init is applied afterwards by
+    data-driven ``"std+he5"`` / ``"std+negud2"`` init is applied afterwards by
     :meth:`RealMLPNet.data_init`, which needs the activations reaching this
     layer and therefore cannot run at construction time.
     """
@@ -98,8 +113,8 @@ class NTPLinear(nn.Module):
         return (1.0 / math.sqrt(self.in_features)) * (x @ self.weight) + self.bias
 
     @torch.no_grad()
-    def data_init_(self, x: Tensor) -> Tensor:
-        """pytabkit's ``std`` weight + ``he+5`` bias init, given the batch of
+    def data_init_(self, x: Tensor, bias_init_mode: str = "he+5") -> Tensor:
+        """pytabkit's ``std`` weight + selected bias init, given the batch of
         activations ``x`` that reaches this layer.  Returns this layer's
         output on ``x`` so the caller can walk the trunk.
 
@@ -113,7 +128,7 @@ class NTPLinear(nn.Module):
         std = pre.std(dim=0, correction=0, keepdim=True).clamp_min(1e-30)
         self.weight.copy_(w / std)
         pre = pre / std
-        self.bias.copy_(_heplus_bias(pre))
+        self.bias.copy_(_data_init_bias(pre, bias_init_mode))
         return pre + self.bias
 
 
@@ -172,13 +187,13 @@ class GroupedNTPLinear(NTPLinear):
         return (x @ (self.weight * self.group_mask)) * self.group_scale + self.bias
 
     @torch.no_grad()
-    def data_init_(self, x: Tensor) -> Tensor:
+    def data_init_(self, x: Tensor, bias_init_mode: str = "he+5") -> Tensor:
         w = torch.randn_like(self.weight)
         pre = (x @ (w * self.group_mask)) * self.group_scale
         std = pre.std(dim=0, correction=0, keepdim=True).clamp_min(1e-30)
         self.weight.copy_(w / std)
         pre = pre / std
-        self.bias.copy_(_heplus_bias(pre))
+        self.bias.copy_(_data_init_bias(pre, bias_init_mode))
         return pre + self.bias
 
 
@@ -198,7 +213,7 @@ class ParametricActivation(nn.Module):
 
 class ScheduledDropout(nn.Module):
     """Dropout whose probability is scaled by a factor the trainer updates
-    per step (RealMLP-TD's flat_cos dropout schedule).
+    per step (RealMLP-TD's flat_cos or an opt-in shared schedule).
 
     The probability lives in a 0-dim buffer (non-persistent — absent from
     state_dicts, moves with ``.to()``): ``F.dropout`` takes ``p`` as an op
@@ -236,7 +251,7 @@ class _RealMLPTower(nn.Module):
         super().__init__()
         self.register_buffer("indices", torch.tensor(sorted(coordinates), dtype=torch.int64))
         fn = _ACTIVATIONS[activation]
-        act_cls = {"mish": nn.Mish, "selu": nn.SELU, "relu": nn.ReLU}[activation]
+        act_cls = {"mish": nn.Mish, "selu": nn.SELU, "relu": nn.ReLU, "silu": nn.SiLU}[activation]
         layers: list[nn.Module] = []
         d_in = len(coordinates)
         for width in hidden_sizes:
@@ -245,7 +260,7 @@ class _RealMLPTower(nn.Module):
             if dropout > 0:
                 layers.append(
                     ScheduledDropout(dropout)
-                    if dropout_schedule == "flat_cos"
+                    if dropout_schedule != "none"
                     else nn.Dropout(dropout)
                 )
             d_in = width
@@ -281,8 +296,7 @@ class RealMLPNet(nn.Module):
         super().__init__()
         if activation not in _ACTIVATIONS:
             raise ValueError(f"Unknown activation {activation!r}. Expected {set(_ACTIVATIONS)}")
-        if dropout_schedule not in ("none", "flat_cos"):
-            raise ValueError(f"Unknown dropout_schedule {dropout_schedule!r}")
+        resolve_schedule(dropout_schedule, parameter="dropout_schedule")
         if init_mode not in _INIT_MODES:
             raise ValueError(f"Unknown init_mode {init_mode!r}. Expected one of {_INIT_MODES}")
         if scale_position not in ("input", "first_layer"):
@@ -307,6 +321,10 @@ class RealMLPNet(nn.Module):
         # batch of rows, so every other model's RNG stream is untouched.
         self.needs_data_init = init_mode != "ntp"
         self.zero_init_output = zero_init_output
+        # The estimator normally applies an output-prior bias after this
+        # hook. Preserve the tuned bias only for the explicitly new mode;
+        # the existing std+he5 recipe keeps its historical prior handling.
+        self.preserve_output_bias_init = init_mode == "std+negud2" and not zero_init_output
         self.scale_position = scale_position
         self.scale_lr_factor = scale_lr_factor
         self.first_layer_lr_factor = first_layer_lr_factor
@@ -323,7 +341,7 @@ class RealMLPNet(nn.Module):
         if scale_position == "first_layer" and embedding.scaling is not None:
             embedding.scaling = None
         fn = _ACTIVATIONS[activation]
-        act_cls = {"mish": nn.Mish, "selu": nn.SELU, "relu": nn.ReLU}[activation]
+        act_cls = {"mish": nn.Mish, "selu": nn.SELU, "relu": nn.ReLU, "silu": nn.SiLU}[activation]
         layers: list[nn.Module] = []
         d_in = embedding.d_out
         groups = None
@@ -353,7 +371,7 @@ class RealMLPNet(nn.Module):
                 if dropout > 0:
                     layers.append(
                         ScheduledDropout(dropout)
-                        if dropout_schedule == "flat_cos"
+                        if dropout_schedule != "none"
                         else nn.Dropout(dropout)
                     )
                 d_in = width
@@ -384,8 +402,9 @@ class RealMLPNet(nn.Module):
 
     def set_schedule_t(self, t: float) -> None:
         """Trainer hook: update scheduled dropout with training progress."""
-        if self.dropout_schedule == "flat_cos":
-            factor = flat_cos(t)
+        schedule = resolve_schedule(self.dropout_schedule, parameter="dropout_schedule")
+        if schedule is not None:
+            factor = schedule(t)
             for module in self.modules():
                 if isinstance(module, ScheduledDropout):
                     module.set_factor(factor)
@@ -413,16 +432,18 @@ class RealMLPNet(nn.Module):
     def data_init(self, x_num: Tensor, x_cat: Tensor) -> None:
         """Estimator hook: run pytabkit's data-driven RealMLP-TD init.
 
-        A no-op under the default ``init_mode="ntp"``.  Under ``"std+he5"``
+        A no-op under the default ``init_mode="ntp"``. Under ``"std+he5"``
+        or ``"std+negud2"``
         the trunk is walked layer by layer on the given batch of *already
         preprocessed* rows: each :class:`NTPLinear` is re-initialized so its
-        pre-activations have unit std and its biases sit at random data
-        points, using the activations the previous (already re-initialized)
-        layers actually produce.  A zero-initialized output layer is left
-        alone.
+        pre-activations have unit std. Biases use ``he+5`` random data
+        points or ``neg-uniform-dynamic-2`` mean/std offsets, respectively,
+        using the activations the previous (already re-initialized) layers
+        actually produce. A zero-initialized output layer is left alone.
         """
-        if self.init_mode != "std+he5":
+        if self.init_mode == "ntp":
             return
+        bias_mode = "neg-uniform-dynamic-2" if self.init_mode == "std+negud2" else "he+5"
         was_training = self.training
         self.eval()                      # dropout must be identity during the walk
         h = self.embedding(x_num, x_cat)
@@ -430,20 +451,20 @@ class RealMLPNet(nn.Module):
             h = self.front_scale(h)
         if self.towers is None:
             for module in self.trunk:
-                h = module.data_init_(h) if isinstance(module, NTPLinear) else module(h)
+                h = module.data_init_(h, bias_mode) if isinstance(module, NTPLinear) else module(h)
         else:
             outputs = []
             for tower in self.towers:
                 branch = h.index_select(1, tower.indices)
                 for module in tower.trunk:
                     branch = (
-                        module.data_init_(branch)
+                        module.data_init_(branch, bias_mode)
                         if isinstance(module, NTPLinear) else module(branch)
                     )
                 outputs.append(branch)
             h = math.sqrt(len(self.towers)) * torch.cat(outputs, dim=1)
         if not self.zero_init_output:
-            self.output_layer.data_init_(h)
+            self.output_layer.data_init_(h, bias_mode)
         if was_training:
             self.train()
 

@@ -36,9 +36,14 @@ from masamlp.core.device import (
 )
 from masamlp.core.metrics import BaseMetric
 from masamlp.core.objectives import BaseObjective, BinaryLogistic
+from masamlp.core.schedules import coslog4, resolve_epoch_count, resolve_schedule
+from masamlp.core.schedules import flat_cos as flat_cos  # compatibility import
 from masamlp.core.training_terms import TrainingTerms
 from masamlp.data.dataset import TabularData
 from masamlp.utils.random import seed_everything
+
+# Keep the old import path available to downstream code.
+_coslog4 = coslog4
 
 
 @dataclass
@@ -98,6 +103,8 @@ class TrainerConfig:
     # batch_size="auto": full-batch at or below the threshold, else minibatch.
     full_batch_threshold: int = 4096
     default_batch_size: int = 1024
+    # Optional executed-epoch count; n_epochs remains the schedule horizon.
+    stop_epoch: int | None = None
 
 
 @dataclass
@@ -347,21 +354,6 @@ def _make_optimizer(
     raise ValueError(f"Unknown optimizer {name!r}. Expected 'adamw', 'adam', or 'sgd'")
 
 
-def _coslog4(t: float) -> float:
-    """RealMLP's lr factor: ``0.5 - 0.5*cos(2*pi*log2(1 + 15*t))`` for
-    ``t`` in [0, 1] — warmup, one full oscillation, and decay to ~0."""
-    return float(0.5 - 0.5 * np.cos(2 * np.pi * np.log2(1 + 15 * t)))
-
-
-def flat_cos(t: float) -> float:
-    """pytabkit's ``flat_cos``: constant 1 for the first half of training,
-    cosine decay to 0 over the second half. Used by RealMLP-TD for the
-    weight-decay and dropout schedules."""
-    if t < 0.5:
-        return 1.0
-    return float(0.5 * (1.0 + np.cos(np.pi * (t - 0.5) / 0.5)))
-
-
 def _update_ema(model: nn.Module, ema_params: dict[str, Tensor], decay: float) -> None:
     """In-place EMA update of the shadow parameters after an optimizer step."""
     with torch.no_grad():
@@ -442,6 +434,7 @@ class Trainer:
         config: TrainerConfig,
         inverse_target: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> TrainResult:
+        executed_epochs = resolve_epoch_count(config.n_epochs, config.stop_epoch)
         mixture_alpha = getattr(model, "mixture_alpha", 0.0)
         _validate_mixture_risk(mixture_alpha, objective, not config.share_training_batches)
         device = resolve_device(config.device)
@@ -487,24 +480,17 @@ class Trainer:
         per_step_schedule = None
         if config.lr_scheduler == "cosine":
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.n_epochs)
-        elif config.lr_scheduler == "coslog4":
-            # RealMLP's schedule, applied per optimizer step over the whole run.
-            per_step_schedule = _coslog4
-        elif config.lr_scheduler != "none":
-            raise ValueError(f"Unknown lr_scheduler {config.lr_scheduler!r}")
-        if config.weight_decay_schedule not in ("none", "flat_cos"):
-            raise ValueError(f"Unknown weight_decay_schedule {config.weight_decay_schedule!r}")
-        wd_scheduled = config.weight_decay_schedule == "flat_cos"
+        else:
+            per_step_schedule = resolve_schedule(config.lr_scheduler, parameter="lr_scheduler")
+        wd_schedule = resolve_schedule(
+            config.weight_decay_schedule, parameter="weight_decay_schedule"
+        )
         model_has_schedule = hasattr(model, "set_schedule_t")
         # pytabkit's `ls_eps_sched`: the smoothing epsilon is scaled per step
         # and enters the LABELS, so the objective's attribute is what moves.
-        _LS_SCHEDULES = {"coslog4": _coslog4, "flat_cos": flat_cos}
-        if config.label_smoothing_schedule not in ("none", *_LS_SCHEDULES):
-            raise ValueError(
-                f"Unknown label_smoothing_schedule {config.label_smoothing_schedule!r}. "
-                f"Expected 'none' or one of {sorted(_LS_SCHEDULES)}"
-            )
-        ls_schedule = _LS_SCHEDULES.get(config.label_smoothing_schedule)
+        ls_schedule = resolve_schedule(
+            config.label_smoothing_schedule, parameter="label_smoothing_schedule"
+        )
         ls_base = getattr(objective, "label_smoothing", None)
         if ls_schedule is not None and ls_base is None:
             raise ValueError(
@@ -605,7 +591,7 @@ class Trainer:
         full_idx = torch.arange(n, device=device) if wants_batch_indices else None
 
         first_step = True
-        for epoch in range(config.n_epochs):
+        for epoch in range(executed_epochs):
             run_model.train()
             epoch_loss = torch.zeros((), device=device)
             unflushed_steps = 0
@@ -631,8 +617,8 @@ class Trainer:
                     factor = per_step_schedule(t)
                     for group in optimizer.param_groups:
                         group["lr"] = config.learning_rate * group["lr_factor"] * factor
-                if wd_scheduled:
-                    wd_now = config.weight_decay * flat_cos(t)
+                if wd_schedule is not None:
+                    wd_now = config.weight_decay * wd_schedule(t)
                     for group in optimizer.param_groups:
                         group["weight_decay"] = wd_now * group["wd_factor"]
                 if model_has_schedule:
@@ -696,7 +682,7 @@ class Trainer:
                 for metric in metrics:
                     result.evals_result[es.name][metric.name].append(metric(es.y_metric, pred))
 
-            if config.verbose > 0 and (epoch % config.verbose == 0 or epoch == config.n_epochs - 1):
+            if config.verbose > 0 and (epoch % config.verbose == 0 or epoch == executed_epochs - 1):
                 parts = [f"[{epoch}] train_loss: {epoch_loss_val:.5f}"]
                 for es in eval_sets:
                     for metric in metrics:
@@ -750,4 +736,8 @@ class Trainer:
         elif ema_params is not None:
             # No early stopping: the final weights are the EMA parameters.
             _swap_in_params(model, ema_params)
+        if config.stop_epoch is not None and result.best_iteration is None:
+            # Explicit fixed-length refits use the last executed epoch. Keep
+            # the pre-existing None convention when no stop count was given.
+            result.best_iteration = epoch
         return result

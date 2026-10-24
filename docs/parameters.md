@@ -93,21 +93,44 @@ Built-in metrics (string values):
 | Parameter | Default | Meaning |
 |---|---|---|
 | `early_stopping_rounds` | `None` | Patience in epochs on the first metric of `valid_0`; restores the best epoch's weights. Requires `eval_set`. |
-| `n_epochs` | `256` | Maximum epochs (early stopping may end training sooner). |
+| `n_epochs` | `256` | Nominal epoch budget and schedule horizon; early stopping or `stop_epoch` can end training sooner. Zero retains initialization-only fitting and requires `stop_epoch=None`. |
+| `stop_epoch` | `None` | Optional number of epochs to execute, an integer from 1 through `n_epochs`. Keeps every schedule on the original `n_epochs` horizon. For a refit selected at epoch 5 of a 6-epoch search, use `n_epochs=6, stop_epoch=5`. Early stopping, when enabled, may stop earlier. This does not select an epoch or refit automatically. |
 | `batch_size` | `"auto"` | `"auto"`: full-batch when the training set has ≤ 4096 rows, else minibatches of 1024. `None`: always full-batch. An int is used as-is (capped at the row count). |
 | `eval_batch_size` | `8192` | Forward-pass batch for evaluation and `predict`; a pure memory knob with no effect on results. Lower it on models whose per-call memory scales with a model-internal axis (e.g. `ft_transformer`'s inner `k`, which folds members into the batch dim — see its sizing notes). |
 | `learning_rate` | `1e-3` | Optimizer learning rate. Models may scale it per parameter group (RealMLP does). |
 | `weight_decay` | `0.0` | Decoupled weight decay (AdamW-style). |
 | `optimizer` | `"adamw"` | `"adamw"`, `"adam"`, or `"sgd"`. |
 | `optimizer_betas` | `None` | `(beta1, beta2)` for adam/adamw (`None` = torch defaults). The RealMLP recipe uses `(0.9, 0.95)`. |
-| `lr_scheduler` | `"none"` | `"none"`, `"cosine"` (per-epoch cosine annealing), or `"coslog4"` (RealMLP's per-step schedule). |
-| `weight_decay_schedule` | `"none"` | `"none"` or `"flat_cos"` (RealMLP-TD: constant for the first half of training, cosine decay after; param groups can opt out, e.g. biases). |
+| `lr_scheduler` | `"none"` | `"none"`, `"cosine"` (per-epoch cosine annealing), or any [shared per-step schedule](#shared-per-step-schedules). |
+| `weight_decay_schedule` | `"none"` | `"none"` or any [shared per-step schedule](#shared-per-step-schedules). Parameter groups retain their weight-decay factors, including zero for opted-out groups. |
 | `weight_decay_mode` | `"auto"` | How weight decay enters the update. `"auto"` keeps each optimizer's own convention (`adamw` decoupled, `adam`/`sgd` coupled) — the pre-0.9.0 behaviour. `"decoupled"` is AdamW's `p *= 1 - lr·wd`; `"coupled"` adds `wd·p` to the gradient so it passes through Adam's second moment. pytabkit's RealMLP-TD is **decoupled**. |
-| `label_smoothing_schedule` | `"none"` | Per-step schedule on the objective's `label_smoothing` (pytabkit's `ls_eps_sched`): `"none"`, `"coslog4"` (RealMLP-TD — 0 at both ends of training, four cosine cycles between) or `"flat_cos"`. Needs an objective with a `label_smoothing` attribute. |
+| `label_smoothing_schedule` | `"none"` | `"none"` or any [shared per-step schedule](#shared-per-step-schedules), multiplying the objective's initial `label_smoothing`. Requires an objective with that attribute. |
 | `drop_last` | `False` | Drop each epoch's final short batch, so every optimizer step sees exactly `batch_size` rows (pytabkit's dataloader default). Also shortens the per-step schedule denominator to `floor(n/batch_size)` steps per epoch. |
 | `share_training_batches` | `True` | Inner ensembles (`tabm`, `realm`): `True` broadcasts the same shuffled row batch to every member (the historical code default); `False` gives every member an independently shuffled row stream, as in the TabM paper's headline experiments. Labels and `sample_weight` follow the member-indexed rows. |
 | `grad_clip` | `None` | Global gradient-norm clip; `None` disables. |
 | `ema_decay` | `None` | Exponential moving average (Polyak averaging) of the weights, e.g. `0.999`; evaluation, early stopping, and the final model use the averaged parameters. Not supported with `ens_mode="vectorized"`. |
+
+### Shared per-step schedules
+
+The LR, weight-decay, label-smoothing and RealMLP dropout controls accept the
+following names. A schedule multiplies its configured base value at progress
+`t = completed_optimizer_steps / (n_epochs * steps_per_epoch)`, starting at
+zero. `stop_epoch` limits execution without changing this denominator. With
+an explicit stop and no early stopping, `best_iteration_` records the last
+executed **zero-based** epoch; the default no-stop behavior is unchanged.
+
+| Name | Multiplier |
+|---|---|
+| `"none"` | Constant 1. |
+| `"coslog4"`, `"cos_log_15"` | Four cosine cycles in log time: `0.5 - 0.5*cos(2*pi*log2(1+15*t))`. The two names are aliases. |
+| `"flat_cos"` | Constant 1 through the first half, then cosine decay to 0. |
+| `"flat_anneal"` | Constant 1 through 60% of the horizon, then cosine decay to `1e-5`. |
+| `"invsqrtp1e-3"` | `sqrt(0.001) / sqrt(t+0.001)`. |
+| `"sqrt_cos"` | `0.05/(sqrt(t)+0.05) * (0.5-0.5*cos(10*pi*t))`. |
+
+The added formulas follow pytabkit 1.7.3. Matching these options alone does
+not establish identical preprocessing, optimizer updates or ensemble behavior.
+Existing defaults and the `realmlp_td_params` recipe remain unchanged.
 
 ### Preprocessing and numeric embeddings
 
@@ -313,13 +336,13 @@ The inner axis composes with outer `n_ens` in loop or vectorized mode.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `hidden_sizes` | `(256, 256, 256)` | Width of every hidden layer, fully free — e.g. `(512, 256, 128)` gives a tapered 3-layer MLP. |
-| `activation` | `"mish"` | `"mish"`, `"selu"`, or `"relu"`. The classifier switches the default to `"selu"` (RealMLP-TD-S uses SELU for classification). |
+| `activation` | `"mish"` | `"mish"`, `"selu"`, `"relu"`, or `"silu"`. The classifier switches the default to `"selu"` (RealMLP-TD-S uses SELU for classification). |
 | `dropout` | `0.0` | Dropout after each activation. The TD recipe uses 0.15, scheduled. |
-| `dropout_schedule` | `"none"` | `"none"` or `"flat_cos"` (dropout decays over training, RealMLP-TD). |
+| `dropout_schedule` | `"none"` | `"none"` or any [shared per-step schedule](#shared-per-step-schedules). |
 | `use_parametric_act` | `False` | Learnable per-unit activation scale (RealMLP-TD), trained at `act_lr_factor`. |
 | `act_lr_factor` | `0.1` | Learning-rate factor for the parametric activations. |
 | `plr_lr_factor` | `1.0` | Learning-rate factor for the numeric-embedding parameters (RealMLP-TD uses 0.1 with PBLD). |
-| `init_mode` | `"ntp"` | `"ntp"` — weights and biases both `N(0, 1)`, the standalone TD-S reference's init. `"std+he5"` — pytabkit's RealMLP-**TD** init, applied layer by layer on a batch of training rows: each weight is rescaled so its pre-activations have unit sample std, and each bias is minus a random Exp(1)-simplex combination of five sampled pre-activations of that unit. Requires the estimator (which supplies the batch); harmless on a model built directly. |
+| `init_mode` | `"ntp"` | `"ntp"` — weights and biases both `N(0, 1)`, the standalone TD-S reference's init. `"std+he5"` — pytabkit's RealMLP-**TD** init, applied layer by layer on a batch of training rows: each weight is rescaled so its pre-activations have unit sample std, and each bias is minus a random Exp(1)-simplex combination of five sampled pre-activations of that unit. `"std+negud2"` uses the same weight normalization with bias `-mean(pre) - sqrt(3)*std(pre)*U(0,1)` (population std). These data-driven modes require the estimator to supply training rows; direct construction alone does not run initialization. Only `std+negud2` with `zero_init_output=False` preserves this output bias instead of applying the estimator's class-prior bias. |
 | `zero_init_output` | `True` | Zero-initialize the output layer (RealMLP-TD-S). RealMLP-TD does **not** — set `False` to init it like any other layer. |
 | `scale_position` | `"input"` | Where the learnable diagonal gain sits. `"input"` scales the raw numeric features before any embedding (TD-S, and what `num_scaling` builds). `"first_layer"` moves it to the first hidden layer's input — after the numeric embedding and beside the one-hots and categorical embeddings — which is where RealMLP-TD's `add_front_scale` puts it. |
 | `scale_lr_factor` | `6.0` | Learning-rate factor for the scaling layer. RealMLP-TD's tuned configurations use values around 2–10. |
@@ -345,12 +368,15 @@ state, RNG draws, optimizer-group ordering, and predictions exactly.
 
 ### `realm` — RealM (RealMLP + full BatchEnsemble)
 
-The `realmlp` architecture with `k` weight-shared members, TabM-style. Every
-`realmlp` knob above carries over unchanged (`hidden_sizes`, `activation`,
+The `realmlp` architecture with `k` weight-shared members, TabM-style. The
+original `realmlp` knobs carry over (`hidden_sizes`, `activation`,
 `dropout`, `dropout_schedule`, `use_parametric_act`, `act_lr_factor`,
 `plr_lr_factor`, `init_mode`, `zero_init_output`, `scale_position`,
 `scale_lr_factor`, `first_layer_lr_factor`, `bias_lr_factor`) with the same
-meaning; the table below is only the ensembling half. See
+meaning; the table below is only the ensembling half. RealM retains its
+original activation choices (`mish`, `selu`, `relu`), initialization modes
+(`ntp`, `std+he5`) and dropout schedules (`none`, `flat_cos`). The new SiLU,
+`std+negud2` and additional dropout schedules apply to `realmlp` only. See
 [realm.md](realm.md).
 
 | Parameter | Default | Meaning |

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Add optional `stop_epoch` to limit executed epochs while retaining the original
+  `n_epochs` schedule horizon in both loop and vectorized ensemble training;
+  existing initialization-only (`n_epochs=0`) fits remain supported.
+- Add shared per-step `flat_anneal`, `cos_log_15`, `invsqrtp1e-3` and `sqrt_cos`
+  schedules for learning rate, weight decay, label smoothing and RealMLP dropout.
+- Preserve NumPy integral constructor settings when saving an estimator.
+- Add RealMLP SiLU and `std+negud2` data-driven initialization, including grouped
+  and tower layers. Existing defaults and recipes remain unchanged. These
+  controls alone do not imply prediction equivalence with pytabkit.
+
 ## 0.14.0 (2026-09-07)
 
 - Add opt-in RealMLP `tower_groups`: disjoint whole-feature towers remain

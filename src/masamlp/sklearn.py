@@ -100,6 +100,7 @@ class BaseMasaModel(BaseEstimator):
         eval_metric: Any = None,
         early_stopping_rounds: int | None = None,
         n_epochs: int = 256,
+        stop_epoch: int | None = None,
         batch_size: int | str | None = "auto",
         eval_batch_size: int = 8192,
         learning_rate: float = 1e-3,
@@ -140,6 +141,7 @@ class BaseMasaModel(BaseEstimator):
         self.eval_metric = eval_metric
         self.early_stopping_rounds = early_stopping_rounds
         self.n_epochs = n_epochs
+        self.stop_epoch = stop_epoch
         self.batch_size = batch_size
         self.eval_batch_size = eval_batch_size
         self.learning_rate = learning_rate
@@ -317,6 +319,9 @@ class BaseMasaModel(BaseEstimator):
         ft_transformer/gandalf/lnn); resnet/danet/modernnca keep the default
         ``ens_mode="loop"`` (a clear error is raised before training otherwise).
         """
+        from masamlp.core.schedules import resolve_epoch_count
+
+        resolve_epoch_count(self.n_epochs, self.stop_epoch)
         if ple_bins is not None and self.num_embedding != "ple":
             raise ValueError("ple_bins requires num_embedding='ple'")
         seed_everything(self.random_state)
@@ -477,6 +482,7 @@ class BaseMasaModel(BaseEstimator):
         ) -> TrainerConfig:
             return TrainerConfig(
                 n_epochs=self.n_epochs,
+                stop_epoch=self.stop_epoch,
                 batch_size=self.batch_size,
                 eval_batch_size=self.eval_batch_size,
                 learning_rate=self.learning_rate,

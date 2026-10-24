@@ -57,12 +57,19 @@ from masamlp.core.trainer import flat_cos
 from masamlp.models.base import FeatureEmbedding
 from masamlp.models.layers import ScalingLayer
 from masamlp.models.realmlp import (
-    _ACTIVATIONS,
-    _INIT_MODES,
     ParametricActivation,
     ScheduledDropout,
     _heplus_bias,
 )
+
+# RealM owns its BatchEnsemble activation/initialization paths. Its supported
+# surface must not grow when the separate RealMLP implementation adds options.
+_ACTIVATIONS = {
+    "mish": torch.nn.functional.mish,
+    "selu": torch.selu,
+    "relu": torch.relu,
+}
+_INIT_MODES = ("ntp", "std+he5")
 
 #: ``member_init`` values for the **first** adapter — the one that turns the
 #: shared embedding into k different member representations.  ``"auto"``
@@ -174,9 +181,10 @@ class EnsembleNTPHead(nn.Module):
 class RealMNet(nn.Module):
     """RealMLP under full BatchEnsemble — see the module docstring.
 
-    Every knob of :class:`~masamlp.models.realmlp.RealMLPNet` carries over
-    with the same meaning; ``k``, ``member_init``, ``adapter_std`` and
-    ``adapter_lr_factor`` are the ensembling half.
+    Shared knobs of :class:`~masamlp.models.realmlp.RealMLPNet` keep their
+    meaning, with RealM's own supported activation and initialization modes;
+    ``k``, ``member_init``, ``adapter_std`` and ``adapter_lr_factor`` are the
+    ensembling half.
     """
 
     #: ``ens_mode="vectorized"`` stacks whole models and vmaps them — the

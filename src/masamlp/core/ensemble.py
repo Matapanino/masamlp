@@ -29,16 +29,15 @@ from torch.nn.modules.batchnorm import _BatchNorm
 from masamlp.core.device import resolve_amp, resolve_device, set_threads
 from masamlp.core.metrics import BaseMetric
 from masamlp.core.objectives import BaseObjective
+from masamlp.core.schedules import resolve_epoch_count, resolve_schedule
 from masamlp.core.trainer import (
     EarlyStopper,
     EvalSet,
     TrainerConfig,
     TrainResult,
-    _coslog4,
     _make_epoch_batches,
     _make_optimizer,
     _resolve_batch_size,
-    flat_cos,
     weighted_loss,
 )
 from masamlp.data.dataset import TabularData
@@ -89,6 +88,7 @@ def fit_vectorized(
     config: TrainerConfig,
     inverse_target: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> list[TrainResult]:
+    executed_epochs = resolve_epoch_count(config.n_epochs, config.stop_epoch)
     check_vectorizable(models[0])
     if objective.torch_modules():
         raise ValueError("nn.Module objectives are not supported with ens_mode='vectorized'")
@@ -156,11 +156,9 @@ def fit_vectorized(
     per_step_schedule = None
     if config.lr_scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.n_epochs)
-    elif config.lr_scheduler == "coslog4":
-        per_step_schedule = _coslog4
-    elif config.lr_scheduler != "none":
-        raise ValueError(f"Unknown lr_scheduler {config.lr_scheduler!r}")
-    wd_scheduled = config.weight_decay_schedule == "flat_cos"
+    else:
+        per_step_schedule = resolve_schedule(config.lr_scheduler, parameter="lr_scheduler")
+    wd_schedule = resolve_schedule(config.weight_decay_schedule, parameter="weight_decay_schedule")
     model_has_schedule = hasattr(base, "set_schedule_t")
     # ``set_schedule_t`` moves non-persistent buffers (ScheduledDropout's keep
     # probability), but ``base`` sits on the meta device and every buffer the
@@ -181,13 +179,9 @@ def fit_vectorized(
     )
     # pytabkit's `ls_eps_sched`: the smoothing epsilon is scaled per step and
     # enters the LABELS, so the objective's attribute is what moves.
-    _LS_SCHEDULES = {"coslog4": _coslog4, "flat_cos": flat_cos}
-    if config.label_smoothing_schedule not in ("none", *_LS_SCHEDULES):
-        raise ValueError(
-            f"Unknown label_smoothing_schedule {config.label_smoothing_schedule!r}. "
-            f"Expected 'none' or one of {sorted(_LS_SCHEDULES)}"
-        )
-    ls_schedule = _LS_SCHEDULES.get(config.label_smoothing_schedule)
+    ls_schedule = resolve_schedule(
+        config.label_smoothing_schedule, parameter="label_smoothing_schedule"
+    )
     ls_base = getattr(objective, "label_smoothing", None)
     if ls_schedule is not None and ls_base is None:
         raise ValueError(
@@ -249,7 +243,7 @@ def fit_vectorized(
             preds.append(pred)
         return preds
 
-    for epoch in range(config.n_epochs):
+    for epoch in range(executed_epochs):
         base.train()
         epoch_loss = torch.zeros((), device=device)
         batches = _make_epoch_batches(
@@ -272,8 +266,8 @@ def fit_vectorized(
                 factor = per_step_schedule(t)
                 for group in optimizer.param_groups:
                     group["lr"] = config.learning_rate * group["lr_factor"] * factor
-            if wd_scheduled:
-                wd_now = config.weight_decay * flat_cos(t)
+            if wd_schedule is not None:
+                wd_now = config.weight_decay * wd_schedule(t)
                 for group in optimizer.param_groups:
                     group["weight_decay"] = wd_now * group["wd_factor"]
             if model_has_schedule:
@@ -316,7 +310,7 @@ def fit_vectorized(
                 for metric in metrics:
                     results[j].evals_result[es.name][metric.name].append(metric(es.y_metric, pred))
 
-        if config.verbose > 0 and (epoch % config.verbose == 0 or epoch == config.n_epochs - 1):
+        if config.verbose > 0 and (epoch % config.verbose == 0 or epoch == executed_epochs - 1):
             parts = [f"[{epoch}] mean_train_loss: {float(epoch_loss):.5f}"]
             if eval_sets:
                 name0, metric0 = eval_sets[0].name, metrics[0].name
@@ -348,6 +342,9 @@ def fit_vectorized(
             for j, stopper in enumerate(stoppers):
                 results[j].best_iteration = stopper.best_epoch
                 results[j].best_score = float(stopper.best_value)
+    elif config.stop_epoch is not None:
+        for result in results:
+            result.best_iteration = epoch
 
     # Unstack back into the individual member modules. Non-persistent buffers
     # (ScheduledDropout's keep probability, the input-routing index selectors)

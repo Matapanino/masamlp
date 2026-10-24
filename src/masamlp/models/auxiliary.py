@@ -40,6 +40,8 @@ class AuxiliaryOrdinalNet(nn.Module):
     The latent joins the primary hidden representation at the binary head.
     Auxiliary dropout is zero so the recomputed hook uses the same latent as
     forward, without storing graphs or consuming extra dropout RNG draws.
+    Its joined-head data initialization supports ``ntp`` and ``std+he5``;
+    RealMLP's separate ``std+negud2`` initialization is not implemented here.
     """
 
     embedding_kind = "tokens"
@@ -66,6 +68,13 @@ class AuxiliaryOrdinalNet(nn.Module):
             raise ValueError("auxiliary_weight must be finite and nonnegative")
         if type(latent_dim) is not int or latent_dim < 1:
             raise ValueError("latent_dim must be a positive integer")
+        if (backbone_params or {}).get('init_mode') == 'std+negud2':
+            # This wrapper initializes the concatenated primary/auxiliary
+            # head itself; it does not use RealMLPNet.data_init's bias policy.
+            raise ValueError(
+                "auxiliary_ordinal does not support backbone init_mode='std+negud2'; "
+                "its joined-head initialization supports 'ntp' and 'std+he5'"
+            )
         config = dict(embedding_config)
         cards = config['cat_cardinalities']
         nums = _partition(parent_num_idx, excluded_num_idx, config['n_num'], 'numeric routing')

@@ -27,12 +27,23 @@ _PRE_NPZ = "preprocessor.npz"
 _STATE = "model_state.pt"
 
 
+def _json_default(value: Any) -> int:
+    """Preserve NumPy integral scalar values, including nested settings.
+
+    Do not make arbitrary objects serializable: custom objective/metric
+    parameters must retain the existing drop-and-warn behavior.
+    """
+    if isinstance(value, np.integer):
+        return int(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _json_safe_params(params: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     safe: dict[str, Any] = {}
     dropped: list[str] = []
     for key, value in params.items():
         try:
-            json.dumps(value)
+            json.dumps(value, default=_json_default)
         except TypeError:
             dropped.append(key)
         else:
@@ -98,7 +109,7 @@ def save_model_dir(est: Any, path: str) -> None:
         "dropped_params": dropped,
         "fitted": fitted,
     }
-    (out / _MANIFEST).write_text(json.dumps(manifest, indent=2))
+    (out / _MANIFEST).write_text(json.dumps(manifest, indent=2, default=_json_default))
 
     pre_meta, pre_arrays = est.preprocessor_.get_state()
     (out / _PRE_JSON).write_text(json.dumps(pre_meta, indent=2))
